@@ -1379,7 +1379,7 @@ contains
    !> Calculate the interpolated mid velocity, including overlap and ghosts
    subroutine interp_velmid(this,Ui,Vi,Wi)
       implicit none
-      class(tpns), intent(inout) :: this
+      class(lowmach), intent(inout) :: this
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: Ui !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: Vi !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: Wi !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
@@ -1519,7 +1519,7 @@ contains
    subroutine get_ugradu(this,ugradu)
       use messager, only: die
       implicit none
-      class(tpns), intent(inout) :: this
+      class(lowmach), intent(inout) :: this
       real(WP), dimension(1:,this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: ugradu  !< Needs to be (1:3,imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       integer :: i,j,k
       real(WP), dimension(:,:,:), allocatable :: dudy,dudz,dvdx,dvdz,dwdx,dwdy
@@ -1528,7 +1528,7 @@ contains
       real(WP) :: Wi,gradWx,gradWy,gradWz
       
       ! Check ugradu's first dimension
-	   if (size(ugradu,dim=1).ne.3) call die('[tpns get_ugradu] gradu should be of size (1:3,imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)')
+	   if (size(ugradu,dim=1).ne.3) call die('[lowmach get_ugradu] gradu should be of size (1:3,imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)')
       
       ! Allocate off-diagonal components of the velocity gradient
 	   allocate(dudy(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
@@ -1612,25 +1612,25 @@ contains
 
    
    !> Calculate the velocity gradient tensor from U/V/W
-   !> Note that gradu(i,j)=duj/dxi
-   subroutine get_gradu(this,gradu)
+   !> Note that gradU(i,j)=duj/dxi
+   subroutine get_gradU(this,gradU)
       use messager, only: die
       implicit none
       class(lowmach), intent(inout) :: this
-      real(WP), dimension(1:,1:,this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: gradu  !< Needs to be (1:3,1:3,imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+      real(WP), dimension(1:,1:,this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: gradU  !< Needs to be (1:3,1:3,imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       integer :: i,j,k
       real(WP), dimension(:,:,:), allocatable :: dudy,dudz,dvdx,dvdz,dwdx,dwdy
       
       ! Check gradu's first two dimensions
-	   if (size(gradu,dim=1).ne.3.or.size(gradu,dim=2).ne.3) call die('[lowmach get_gradu] gradu should be of size (1:3,1:3,imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)')
+	   if (size(gradU,dim=1).ne.3.or.size(gradU,dim=2).ne.3) call die('[lowmach get_gradU] gradU should be of size (1:3,1:3,imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)')
       
       ! Compute dudx, dvdy, and dwdz first
 	   do k=this%cfg%kmin_,this%cfg%kmax_
          do j=this%cfg%jmin_,this%cfg%jmax_
             do i=this%cfg%imin_,this%cfg%imax_
-               gradu(1,1,i,j,k)=sum(this%grdu_x(:,i,j,k)*this%U(i:i+1,j,k))
-               gradu(2,2,i,j,k)=sum(this%grdv_y(:,i,j,k)*this%V(i,j:j+1,k))
-               gradu(3,3,i,j,k)=sum(this%grdw_z(:,i,j,k)*this%W(i,j,k:k+1))
+               gradU(1,1,i,j,k)=sum(this%grdu_x(:,i,j,k)*this%U(i:i+1,j,k))
+               gradU(2,2,i,j,k)=sum(this%grdv_y(:,i,j,k)*this%V(i,j:j+1,k))
+               gradU(3,3,i,j,k)=sum(this%grdw_z(:,i,j,k)*this%W(i,j,k:k+1))
             end do
          end do
       end do
@@ -1661,59 +1661,59 @@ contains
 	   do k=this%cfg%kmin_,this%cfg%kmax_
          do j=this%cfg%jmin_,this%cfg%jmax_
             do i=this%cfg%imin_,this%cfg%imax_
-               gradu(2,1,i,j,k)=0.25_WP*sum(dudy(i:i+1,j:j+1,k))
-               gradu(3,1,i,j,k)=0.25_WP*sum(dudz(i:i+1,j,k:k+1))
-               gradu(1,2,i,j,k)=0.25_WP*sum(dvdx(i:i+1,j:j+1,k))
-               gradu(3,2,i,j,k)=0.25_WP*sum(dvdz(i,j:j+1,k:k+1))
-               gradu(1,3,i,j,k)=0.25_WP*sum(dwdx(i:i+1,j,k:k+1))
-               gradu(2,3,i,j,k)=0.25_WP*sum(dwdy(i,j:j+1,k:k+1))
+               gradU(2,1,i,j,k)=0.25_WP*sum(dudy(i:i+1,j:j+1,k))
+               gradU(3,1,i,j,k)=0.25_WP*sum(dudz(i:i+1,j,k:k+1))
+               gradU(1,2,i,j,k)=0.25_WP*sum(dvdx(i:i+1,j:j+1,k))
+               gradU(3,2,i,j,k)=0.25_WP*sum(dvdz(i,j:j+1,k:k+1))
+               gradU(1,3,i,j,k)=0.25_WP*sum(dwdx(i:i+1,j,k:k+1))
+               gradU(2,3,i,j,k)=0.25_WP*sum(dwdy(i,j:j+1,k:k+1))
             end do
          end do
       end do
       
       ! Apply a Neumann condition in non-periodic directions
 	   if (.not.this%cfg%xper) then
-         if (this%cfg%iproc.eq.1)            gradu(:,:,this%cfg%imin-1,:,:)=gradu(:,:,this%cfg%imin,:,:)
-         if (this%cfg%iproc.eq.this%cfg%npx) gradu(:,:,this%cfg%imax+1,:,:)=gradu(:,:,this%cfg%imax,:,:)
+         if (this%cfg%iproc.eq.1)            gradU(:,:,this%cfg%imin-1,:,:)=gradU(:,:,this%cfg%imin,:,:)
+         if (this%cfg%iproc.eq.this%cfg%npx) gradU(:,:,this%cfg%imax+1,:,:)=gradU(:,:,this%cfg%imax,:,:)
       end if
       if (.not.this%cfg%yper) then
-         if (this%cfg%jproc.eq.1)            gradu(:,:,:,this%cfg%jmin-1,:)=gradu(:,:,:,this%cfg%jmin,:)
-         if (this%cfg%jproc.eq.this%cfg%npy) gradu(:,:,:,this%cfg%jmax+1,:)=gradu(:,:,:,this%cfg%jmax,:)
+         if (this%cfg%jproc.eq.1)            gradU(:,:,:,this%cfg%jmin-1,:)=gradU(:,:,:,this%cfg%jmin,:)
+         if (this%cfg%jproc.eq.this%cfg%npy) gradU(:,:,:,this%cfg%jmax+1,:)=gradU(:,:,:,this%cfg%jmax,:)
       end if
       if (.not.this%cfg%zper) then
-         if (this%cfg%kproc.eq.1)            gradu(:,:,:,:,this%cfg%kmin-1)=gradu(:,:,:,:,this%cfg%kmin)
-         if (this%cfg%kproc.eq.this%cfg%npz) gradu(:,:,:,:,this%cfg%kmax+1)=gradu(:,:,:,:,this%cfg%kmax)
+         if (this%cfg%kproc.eq.1)            gradU(:,:,:,:,this%cfg%kmin-1)=gradU(:,:,:,:,this%cfg%kmin)
+         if (this%cfg%kproc.eq.this%cfg%npz) gradU(:,:,:,:,this%cfg%kmax+1)=gradU(:,:,:,:,this%cfg%kmax)
       end if
       
       ! Ensure zero in walls
 	   do k=this%cfg%kmino_,this%cfg%kmaxo_
          do j=this%cfg%jmino_,this%cfg%jmaxo_
             do i=this%cfg%imino_,this%cfg%imaxo_
-               if (this%mask(i,j,k).eq.1) gradu(:,:,i,j,k)=0.0_WP
+               if (this%mask(i,j,k).eq.1) gradU(:,:,i,j,k)=0.0_WP
             end do
          end do
       end do
       
       ! Sync it
-	   call this%cfg%sync(gradu)
+	   call this%cfg%sync(gradU)
       
       ! Deallocate velocity gradient storage
 	   deallocate(dudy,dudz,dvdx,dvdz,dwdx,dwdy)
       
-   end subroutine get_gradu
+   end subroutine get_gradU
 
    !> Calculate the velocity gradient tensor from Umid/Vmid/Wmid
    !> Note that gradU(i,j)=duj/dxi
    subroutine get_gradUmid(this,gradU)
       use messager, only: die
       implicit none
-      class(tpns), intent(inout) :: this
+      class(lowmach), intent(inout) :: this
       real(WP), dimension(1:,1:,this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: gradU  !< Needs to be (1:3,1:3,imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       integer :: i,j,k
       real(WP), dimension(:,:,:), allocatable :: dudy,dudz,dvdx,dvdz,dwdx,dwdy
       
       ! Check gradU's first two dimensions
-	   if (size(gradU,dim=1).ne.3.or.size(gradU,dim=2).ne.3) call die('[tpns get_gradUmid] gradU should be of size (1:3,1:3,imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)')
+	   if (size(gradU,dim=1).ne.3.or.size(gradU,dim=2).ne.3) call die('[lowmach get_gradUmid] gradU should be of size (1:3,1:3,imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)')
       
       ! Compute dudx, dvdy, and dwdz first
 	   do k=this%cfg%kmin_,this%cfg%kmax_

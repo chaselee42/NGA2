@@ -32,6 +32,7 @@ module simulation
    !> Private work arrays
    real(WP), dimension(:,:,:), allocatable :: resU,resV,resW,resSC
    real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi
+   real(WP), dimension(:,:,:,:), allocatable :: vel
    
    !> Equation of state
    real(WP) :: Tmin,Tmax,fluid_mass
@@ -74,6 +75,7 @@ contains
          allocate(Ui  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
          allocate(Vi  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
          allocate(Wi  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+         allocate(vel (1:3,cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
          ! Scalar solver
          allocate(resSC(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
       end block allocate_work_arrays
@@ -93,15 +95,15 @@ contains
       
       ! Create a scalar solver
       create_scalar: block
-         use vdscalar_class, only: dirichlet,neumann,quick
+         use vdscalar_class, only: dirichlet,neumann
          real(WP) :: diffusivity
          ! Create scalar solver
-         sc=vdscalar(cfg=cfg,scheme=quick,name='Temperature')
+         sc=vdscalar(cfg=cfg,name='Temperature')
          ! Assign constant diffusivity
          call param_read('Dynamic diffusivity',diffusivity)
          sc%diff=diffusivity
          ! Configure implicit scalar solver
-         ss=ddadi(cfg=cfg,name='Scalar',nst=13)
+         ss=ddadi(cfg=cfg,name='Scalar',nst=7)
          ! Setup the solver
          call sc%setup(implicit_solver=ss)
       end block create_scalar
@@ -150,8 +152,8 @@ contains
          ! Form momentum
          call fs%rho_multiply
          ! Apply all other boundary conditions
-         call fs%apply_bcond(time%t,time%dt)
-         call fs%interp_vel(Ui,Vi,Wi)
+         call fs%interp_velmid(Ui,Vi,Wi)
+         call fs%interp_vel(vel(1,:,:,:),vel(2,:,:,:),vel(3,:,:,:))
          resSC=0.0_WP
          call fs%get_div(drhodt=resSC)
          ! Compute MFR through all boundary conditions
@@ -256,20 +258,20 @@ contains
          do while (time%it.le.time%itmax)
             
             ! ============= SCALAR SOLVER =======================
-            ! Build mid-time scalar
-            sc%SC=0.5_WP*(sc%SC+sc%SCold)
+            ! Build mid-time scalar   <-- For now, assume that SCmid and rhoU was already formed
+            ! sc%SCmid=0.5_WP*(sc%SC+sc%SCold)
             
             ! Explicit calculation of drhoSC/dt from scalar equation
             call sc%get_drhoSCdt(resSC,fs%rhoU,fs%rhoV,fs%rhoW)
             
             ! Assemble explicit residual
-            resSC=time%dt*resSC-(2.0_WP*sc%rho*sc%SC-(sc%rho+sc%rhoold)*sc%SCold)
+            resSC=-(sc%SC*sc%rho-sc%SCold*sc%rhoold)+time%dt*resSC
             
             ! Form implicit residual
             call sc%solve_implicit(time%dt,resSC,fs%rhoU,fs%rhoV,fs%rhoW)
             
             ! Apply this residual
-            sc%SC=2.0_WP*sc%SC-sc%SCold+resSC
+            sc%SC=sc%SC+resSC
             
             ! Apply other boundary conditions on the resulting field
             call sc%apply_bcond(time%t,time%dt)
@@ -288,13 +290,19 @@ contains
             
             ! ============ VELOCITY SOLVER ======================
             
-            ! Build n+1 density
-            fs%rho=0.5_WP*(sc%rho+sc%rhoold)
+            ! ! Build n+1 density
+            ! fs%rho=0.5_WP*(sc%rho+sc%rhoold)
+            ! Build n+1 density and update sqrt(face density)
+            fs%rho=sc%rho; call fs%update_density(rho=fs%rho)
+            sc%SCmid=(sqrt(fs%rho)*sc%SC+sqrt(fs%rhoold)*sc%SCold)/(sqrt(fs%rho)+sqrt(fs%rhoold))
             
-            ! Build mid-time velocity and momentum
-            fs%U=0.5_WP*(fs%U+fs%Uold); fs%rhoU=0.5_WP*(fs%rhoU+fs%rhoUold)
-            fs%V=0.5_WP*(fs%V+fs%Vold); fs%rhoV=0.5_WP*(fs%rhoV+fs%rhoVold)
-            fs%W=0.5_WP*(fs%W+fs%Wold); fs%rhoW=0.5_WP*(fs%rhoW+fs%rhoWold)
+            ! Update mass flux g_j
+            fs%rhoU=fs%sRHOX**2*fs%Umid    
+            fs%rhoV=fs%sRHOY**2*fs%Vmid
+            fs%rhoW=fs%sRHOZ**2*fs%Wmid
+
+            ! Prepare staggered viscosity
+            call fs%get_viscosity()
             
             ! Explicit calculation of drho*u/dt from NS
             call fs%get_dmomdt(resU,resV,resW)
@@ -303,27 +311,34 @@ contains
             call fs%addsrc_gravity(resU,resV,resW)
             
             ! Assemble explicit residual
-            resU=time%dtmid*resU-(2.0_WP*fs%rhoU-2.0_WP*fs%rhoUold)
-            resV=time%dtmid*resV-(2.0_WP*fs%rhoV-2.0_WP*fs%rhoVold)
-            resW=time%dtmid*resW-(2.0_WP*fs%rhoW-2.0_WP*fs%rhoWold)
+            resU=time%dt*resU-(fs%U*fs%sRHOX**2-fs%Uold*fs%sRHOXold**2)
+            resV=time%dt*resV-(fs%V*fs%sRHOY**2-fs%Vold*fs%sRHOYold**2)
+            resW=time%dt*resW-(fs%W*fs%sRHOZ**2-fs%Wold*fs%sRHOZold**2)
             
             ! Form implicit residuals
-            call fs%solve_implicit(time%dtmid,resU,resV,resW)
+            call fs%solve_implicit(time%dt,resU,resV,resW)
             
             ! Apply these residuals
-            fs%U=2.0_WP*fs%U-fs%Uold+resU
-            fs%V=2.0_WP*fs%V-fs%Vold+resV
-            fs%W=2.0_WP*fs%W-fs%Wold+resW
+            fs%U=fs%U+resU
+            fs%V=fs%V+resV
+            fs%W=fs%W+resW
             
-            ! Apply other boundary conditions and update momentum
+            ! Apply boundary conditions, correct mfr and update momentum
             call fs%rho_multiply()
-            call fs%apply_bcond(time%tmid,time%dtmid)
-            
-            ! Solve Poisson equation
+            call fs%apply_bcond(time%t,time%dt)
             call sc%get_drhodt(dt=time%dt,drhodt=resSC)
             call fs%correct_mfr(drhodt=resSC)
+            
+            ! ============ Poisson equation ======================
+            ! Compute predictor Umid
+            fs%Umid=(fs%sRHOX*fs%U*fs%theta+fs%sRHOXold*fs%Uold*(1.0_WP-fs%theta))/(fs%sRHOX*fs%theta+fs%sRHOXold*(1.0_WP-fs%theta))
+            fs%Vmid=(fs%sRHOY*fs%V*fs%theta+fs%sRHOYold*fs%Vold*(1.0_WP-fs%theta))/(fs%sRHOY*fs%theta+fs%sRHOYold*(1.0_WP-fs%theta))
+            fs%Wmid=(fs%sRHOZ*fs%W*fs%theta+fs%sRHOZold*fs%Wold*(1.0_WP-fs%theta))/(fs%sRHOZ*fs%theta+fs%sRHOZold*(1.0_WP-fs%theta))
+
+            ! Solve Poisson equation
+            call fs%update_laplacian()
             call fs%get_div(drhodt=resSC)
-            fs%psolv%rhs=-fs%cfg%vol*fs%div/time%dtmid
+            fs%psolv%rhs=-fs%cfg%vol*fs%div/time%dt
             fs%psolv%sol=0.0_WP
             call fs%psolv%solve()
             call fs%shift_p(fs%psolv%sol)
@@ -331,10 +346,17 @@ contains
             ! Correct momentum and rebuild velocity
             call fs%get_pgrad(fs%psolv%sol,resU,resV,resW)
             fs%P=fs%P+fs%psolv%sol
-            fs%rhoU=fs%rhoU-time%dtmid*resU
-            fs%rhoV=fs%rhoV-time%dtmid*resV
-            fs%rhoW=fs%rhoW-time%dtmid*resW
-            call fs%rho_divide
+            fs%rhoU=fs%rhoU-time%dt*resU
+            fs%rhoV=fs%rhoV-time%dt*resV
+            fs%rhoW=fs%rhoW-time%dt*resW
+            fs%U=fs%U-time%dt*resU/(fs%sRHOX**2)
+            fs%V=fs%V-time%dt*resV/(fs%sRHOY**2)
+            fs%W=fs%W-time%dt*resW/(fs%sRHOZ**2)
+            fs%Umid=fs%Umid-time%dt*resU/((fs%sRHOX+fs%sRHOXold*(1.0_WP-fs%theta)/fs%theta)*fs%sRHOX)
+            fs%Vmid=fs%Vmid-time%dt*resV/((fs%sRHOY+fs%sRHOYold*(1.0_WP-fs%theta)/fs%theta)*fs%sRHOY)
+            fs%Wmid=fs%Wmid-time%dt*resW/((fs%sRHOZ+fs%sRHOZold*(1.0_WP-fs%theta)/fs%theta)*fs%sRHOZ)
+
+            ! call fs%rho_divide
             ! ===================================================
             
             ! Increment sub-iteration counter
@@ -343,7 +365,8 @@ contains
          end do
          
          ! Recompute interpolated velocity and divergence
-         call fs%interp_vel(Ui,Vi,Wi)
+         call fs%interp_velmid(Ui,Vi,Wi)
+         call fs%interp_vel(vel(1,:,:,:),vel(2,:,:,:),vel(3,:,:,:))
          call sc%get_drhodt(dt=time%dt,drhodt=resSC)
          call fs%get_div(drhodt=resSC)
          

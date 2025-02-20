@@ -15,11 +15,7 @@ module vdscalar_class
    
    ! List of known available bcond for this solver
    integer, parameter, public :: dirichlet=2                !< Dirichlet condition
-   integer, parameter, public :: neumann=3                  !< Zero normal gradient
-   
-   ! List of available advection schemes for scalar transport
-   integer, parameter, public :: quick=1                    !< Quick scheme
-   
+   integer, parameter, public :: neumann=3                  !< Zero normal gradient   
    
    !> Boundary conditions for the incompressible solver
    type :: bcond
@@ -42,6 +38,9 @@ module vdscalar_class
       ! This is the name of the solver
       character(len=str_medium) :: name='UNNAMED_VDSCALAR'  !< Solver name (default=UNNAMED_VDSCALAR)
       
+      ! Theta parameter for stabilization
+      real(WP) :: theta=0.5_WP                            !< Choosing theta=0.5 leads to Crank-Nicolson, theta>0.5 increases stability 
+
       ! Variable property fluid
       real(WP), dimension(:,:,:), allocatable :: diff       !< These is our variable scalar dynamic diffusivity
       
@@ -52,6 +51,7 @@ module vdscalar_class
       ! Scalar variable
       real(WP), dimension(:,:,:), allocatable :: rho        !< Density array
       real(WP), dimension(:,:,:), allocatable :: SC         !< SC array
+      real(WP), dimension(:,:,:), allocatable :: SCmid      !< Mid-time SC array
       real(WP), dimension(:,:,:), allocatable :: rhoSC      !< rhoSC array
       
       ! Old scalar variable
@@ -64,12 +64,7 @@ module vdscalar_class
       integer, dimension(:,:,:), allocatable :: stmap       !< Inverse map from stencil shift to index location
       
       ! Metrics
-      integer :: scheme                                     !< Advection scheme for scalar
-      integer :: nst                                        !< Scheme order (and elemental stencil size)
-      integer :: stp1,stp2                                  !< Plus interpolation stencil extent for scalar advection
-      integer :: stm1,stm2                                  !< Minus interpolation stencil extent for scalar advection
-      real(WP), dimension(:,:,:,:), allocatable :: itpsc_xp,itpsc_yp,itpsc_zp        !< Plus interpolation for SC
-      real(WP), dimension(:,:,:,:), allocatable :: itpsc_xm,itpsc_ym,itpsc_zm        !< Minus interpolation for SC
+      real(WP), dimension(:,:,:,:), allocatable :: itpsc_x,itpsc_y,itpsc_z           !< Interpolation for SC
       real(WP), dimension(:,:,:,:), allocatable :: divsc_x ,divsc_y ,divsc_z         !< Divergence for SC
       real(WP), dimension(:,:,:,:), allocatable :: grdsc_x ,grdsc_y ,grdsc_z         !< Scalar gradient for SC
       real(WP), dimension(:,:,:,:), allocatable :: itp_x   ,itp_y   ,itp_z           !< Second order interpolation for SC diffusivity
@@ -109,12 +104,11 @@ contains
    
    
    !> Default constructor for variable density scalar solver
-   function constructor(cfg,scheme,name) result(self)
+   function constructor(cfg,name) result(self)
       use messager, only: die
       implicit none
       type(vdscalar) :: self
       class(config), target, intent(in) :: cfg
-      integer, intent(in) :: scheme
       character(len=*), optional :: name
       integer :: i,j,k
       
@@ -130,26 +124,13 @@ contains
       
       ! Allocate variables
       allocate(self%SC      (self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%SC      =0.0_WP
+      allocate(self%SCmid   (self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%SCmid   =0.0_WP
       allocate(self%SCold   (self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%SCold   =0.0_WP
       allocate(self%rho     (self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%rho     =0.0_WP
       allocate(self%rhoold  (self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%rhoold  =0.0_WP
       allocate(self%rhoSC   (self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%rhoSC   =0.0_WP
       allocate(self%rhoSCold(self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%rhoSCold=0.0_WP
       allocate(self%diff    (self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%diff    =0.0_WP
-      
-      ! Prepare advection scheme
-      self%scheme=scheme
-      select case (self%scheme)
-      case (quick)
-         ! Check current overlap
-         if (self%cfg%no.lt.2) call die('[scalar constructor] vdscalar transport scheme requires larger overlap')
-         ! Set interpolation stencil sizes
-         self%nst=3
-         self%stp1=-(self%nst+1)/2; self%stp2=self%nst+self%stp1-1
-         self%stm1=-(self%nst-1)/2; self%stm2=self%nst+self%stm1-1
-      case default
-         call die('[scalar constructor] Unknown vdscalar transport scheme selected')
-      end select
       
       ! Prepare default metrics
       call self%init_metrics()
@@ -182,52 +163,38 @@ contains
    
    !> Metric initialization with no awareness of walls nor bcond
    subroutine init_metrics(this)
-      use mathtools, only: fv_itp_build
       implicit none
       class(vdscalar), intent(inout) :: this
       integer :: i,j,k
-      
-      ! Allocate finite difference diffusivity interpolation coefficients
-      allocate(this%itp_x(-1:0,this%cfg%imin_:this%cfg%imax_+1,this%cfg%jmin_:this%cfg%jmax_+1,this%cfg%kmin_:this%cfg%kmax_+1)) !< X-face-centered
-      allocate(this%itp_y(-1:0,this%cfg%imin_:this%cfg%imax_+1,this%cfg%jmin_:this%cfg%jmax_+1,this%cfg%kmin_:this%cfg%kmax_+1)) !< Y-face-centered
-      allocate(this%itp_z(-1:0,this%cfg%imin_:this%cfg%imax_+1,this%cfg%jmin_:this%cfg%jmax_+1,this%cfg%kmin_:this%cfg%kmax_+1)) !< Z-face-centered
-      ! Create diffusivity interpolation coefficients to cell face
-      do k=this%cfg%kmin_,this%cfg%kmax_+1
-         do j=this%cfg%jmin_,this%cfg%jmax_+1
-            do i=this%cfg%imin_,this%cfg%imax_+1
-               this%itp_x(:,i,j,k)=this%cfg%dxmi(i)*[this%cfg%xm(i)-this%cfg%x(i),this%cfg%x(i)-this%cfg%xm(i-1)] !< Linear interpolation in x from [xm,ym,zm] to [x,ym,zm]
+
+      ! Allocate finite difference scalar interpolation coefficients to cell faces
+      allocate(this%itp_x(-1:0,this%cfg%imino_+1:this%cfg%imaxo_,this%cfg%jmino_  :this%cfg%jmaxo_,this%cfg%kmino_  :this%cfg%kmaxo_)) !< X-face-centered
+      allocate(this%itp_y(-1:0,this%cfg%imino_  :this%cfg%imaxo_,this%cfg%jmino_+1:this%cfg%jmaxo_,this%cfg%kmino_  :this%cfg%kmaxo_)) !< Y-face-centered
+      allocate(this%itp_z(-1:0,this%cfg%imino_  :this%cfg%imaxo_,this%cfg%jmino_  :this%cfg%jmaxo_,this%cfg%kmino_+1:this%cfg%kmaxo_)) !< Z-face-centered
+      ! Create scalar interpolation coefficients to cell face in x
+      do k=this%cfg%kmino_  ,this%cfg%kmaxo_
+         do j=this%cfg%jmino_  ,this%cfg%jmaxo_
+            do i=this%cfg%imino_+1,this%cfg%imaxo_
+               this%itp_x(:,i,j,k)=this%cfg%dxmi(i)*[this%cfg%xm(i)-this%cfg%x(i),this%cfg%x(i)-this%cfg%xm(i-1)] !< Linear interpolation in x from [xm,ym,zm] to [x,ym,zm]
+            end do
+         end do
+      end do
+      ! Create scalar interpolation coefficients to cell face in y
+      do k=this%cfg%kmino_  ,this%cfg%kmaxo_
+         do j=this%cfg%jmino_+1,this%cfg%jmaxo_
+            do i=this%cfg%imino_  ,this%cfg%imaxo_
                this%itp_y(:,i,j,k)=this%cfg%dymi(j)*[this%cfg%ym(j)-this%cfg%y(j),this%cfg%y(j)-this%cfg%ym(j-1)] !< Linear interpolation in y from [xm,ym,zm] to [xm,y,zm]
+            end do
+         end do
+      end do
+      ! Create scalar interpolation coefficients to cell face in z
+      do k=this%cfg%kmino_+1,this%cfg%kmaxo_
+         do j=this%cfg%jmino_  ,this%cfg%jmaxo_
+            do i=this%cfg%imino_  ,this%cfg%imaxo_
                this%itp_z(:,i,j,k)=this%cfg%dzmi(k)*[this%cfg%zm(k)-this%cfg%z(k),this%cfg%z(k)-this%cfg%zm(k-1)] !< Linear interpolation in z from [xm,ym,zm] to [xm,ym,z]
             end do
          end do
       end do
-      
-      ! Allocate finite difference scalar interpolation coefficients
-      allocate(this%itpsc_xp(this%stp1:this%stp2,this%cfg%imin_:this%cfg%imax_+1,this%cfg%jmin_:this%cfg%jmax_+1,this%cfg%kmin_:this%cfg%kmax_+1)) !< X-face-centered
-      allocate(this%itpsc_xm(this%stm1:this%stm2,this%cfg%imin_:this%cfg%imax_+1,this%cfg%jmin_:this%cfg%jmax_+1,this%cfg%kmin_:this%cfg%kmax_+1)) !< X-face-centered
-      allocate(this%itpsc_yp(this%stp1:this%stp2,this%cfg%imin_:this%cfg%imax_+1,this%cfg%jmin_:this%cfg%jmax_+1,this%cfg%kmin_:this%cfg%kmax_+1)) !< Y-face-centered
-      allocate(this%itpsc_ym(this%stm1:this%stm2,this%cfg%imin_:this%cfg%imax_+1,this%cfg%jmin_:this%cfg%jmax_+1,this%cfg%kmin_:this%cfg%kmax_+1)) !< Y-face-centered
-      allocate(this%itpsc_zp(this%stp1:this%stp2,this%cfg%imin_:this%cfg%imax_+1,this%cfg%jmin_:this%cfg%jmax_+1,this%cfg%kmin_:this%cfg%kmax_+1)) !< Z-face-centered
-      allocate(this%itpsc_zm(this%stm1:this%stm2,this%cfg%imin_:this%cfg%imax_+1,this%cfg%jmin_:this%cfg%jmax_+1,this%cfg%kmin_:this%cfg%kmax_+1)) !< Z-face-centered
-      ! Create scalar interpolation coefficients to cell faces
-      select case (this%scheme)
-      case (quick)
-         do k=this%cfg%kmin_,this%cfg%kmax_+1
-            do j=this%cfg%jmin_,this%cfg%jmax_+1
-               do i=this%cfg%imin_,this%cfg%imax_+1
-                  ! Interpolation to x-face
-                  call fv_itp_build(n=3,x=this%cfg%x(i+this%stp1:i+this%stp2+1),xp=this%cfg%x(i),coeff=this%itpsc_xp(:,i,j,k))
-                  call fv_itp_build(n=3,x=this%cfg%x(i+this%stm1:i+this%stm2+1),xp=this%cfg%x(i),coeff=this%itpsc_xm(:,i,j,k))
-                  ! Interpolation to y-face
-                  call fv_itp_build(n=3,x=this%cfg%y(j+this%stp1:j+this%stp2+1),xp=this%cfg%y(j),coeff=this%itpsc_yp(:,i,j,k))
-                  call fv_itp_build(n=3,x=this%cfg%y(j+this%stm1:j+this%stm2+1),xp=this%cfg%y(j),coeff=this%itpsc_ym(:,i,j,k))
-                  ! Interpolation to z-face
-                  call fv_itp_build(n=3,x=this%cfg%z(k+this%stp1:k+this%stp2+1),xp=this%cfg%z(k),coeff=this%itpsc_zp(:,i,j,k))
-                  call fv_itp_build(n=3,x=this%cfg%z(k+this%stm1:k+this%stm2+1),xp=this%cfg%z(k),coeff=this%itpsc_zm(:,i,j,k))
-               end do
-            end do
-         end do
-      end select
       
       ! Allocate finite volume divergence operators
       allocate(this%divsc_x(0:+1,this%cfg%imin_:this%cfg%imax_,this%cfg%jmin_:this%cfg%jmax_,this%cfg%kmin_:this%cfg%kmax_)) !< Cell-centered
@@ -284,41 +251,6 @@ contains
                ! Linear interpolation in z
                if (this%mask(i,j,k).eq.0.and.this%mask(i,j,k-1).gt.0) this%itp_z(:,i,j,k)=[0.0_WP,1.0_WP]
                if (this%mask(i,j,k).gt.0.and.this%mask(i,j,k-1).eq.0) this%itp_z(:,i,j,k)=[1.0_WP,0.0_WP]
-            end do
-         end do
-      end do
-      
-      ! Adjust scalar interpolation to reflect Dirichlet boundaries
-      do k=this%cfg%kmin_,this%cfg%kmax_+1
-         do j=this%cfg%jmin_,this%cfg%jmax_+1
-            do i=this%cfg%imin_,this%cfg%imax_+1
-               ! X face
-               if (this%mask(i-1,j,k).eq.2) then
-                  this%itpsc_xm(:,i,j,k)=0.0_WP; this%itpsc_xm(-1,i,j,k)=1.0_WP
-                  this%itpsc_xp(:,i,j,k)=0.0_WP; this%itpsc_xp(-1,i,j,k)=1.0_WP
-               end if
-               if (this%mask(i  ,j,k).eq.2) then
-                  this%itpsc_xm(:,i,j,k)=0.0_WP; this%itpsc_xm( 0,i,j,k)=1.0_WP
-                  this%itpsc_xp(:,i,j,k)=0.0_WP; this%itpsc_xp( 0,i,j,k)=1.0_WP
-               end if
-               ! Y face
-               if (this%mask(i,j-1,k).eq.2) then
-                  this%itpsc_ym(:,i,j,k)=0.0_WP; this%itpsc_ym(-1,i,j,k)=1.0_WP
-                  this%itpsc_yp(:,i,j,k)=0.0_WP; this%itpsc_yp(-1,i,j,k)=1.0_WP
-               end if
-               if (this%mask(i,j  ,k).eq.2) then
-                  this%itpsc_ym(:,i,j,k)=0.0_WP; this%itpsc_ym( 0,i,j,k)=1.0_WP
-                  this%itpsc_yp(:,i,j,k)=0.0_WP; this%itpsc_yp( 0,i,j,k)=1.0_WP
-               end if
-               ! Z face
-               if (this%mask(i,j,k-1).eq.2) then
-                  this%itpsc_zm(:,i,j,k)=0.0_WP; this%itpsc_zm(-1,i,j,k)=1.0_WP
-                  this%itpsc_zp(:,i,j,k)=0.0_WP; this%itpsc_zp(-1,i,j,k)=1.0_WP
-               end if
-               if (this%mask(i,j,k  ).eq.2) then
-                  this%itpsc_zm(:,i,j,k)=0.0_WP; this%itpsc_zm( 0,i,j,k)=1.0_WP
-                  this%itpsc_zp(:,i,j,k)=0.0_WP; this%itpsc_zp( 0,i,j,k)=1.0_WP
-               end if
             end do
          end do
       end do
@@ -380,16 +312,14 @@ contains
          ! Point to implicit solver linsol object
          this%implicit=>implicit_solver
          
-         ! Set dynamic stencil map for the scalar solver
-         count=1; this%implicit%stc(count,:)=[0,0,0]
-         do st=1,abs(this%stp1)
-            count=count+1; this%implicit%stc(count,:)=[+st,0,0]
-            count=count+1; this%implicit%stc(count,:)=[-st,0,0]
-            count=count+1; this%implicit%stc(count,:)=[0,+st,0]
-            count=count+1; this%implicit%stc(count,:)=[0,-st,0]
-            count=count+1; this%implicit%stc(count,:)=[0,0,+st]
-            count=count+1; this%implicit%stc(count,:)=[0,0,-st]
-         end do
+         ! Set 7-pt stencil map for the scalar solver
+         this%implicit%stc(1,:)=[ 0, 0, 0]
+         this%implicit%stc(2,:)=[+1, 0, 0]
+         this%implicit%stc(3,:)=[-1, 0, 0]
+         this%implicit%stc(4,:)=[ 0,+1, 0]
+         this%implicit%stc(5,:)=[ 0,-1, 0]
+         this%implicit%stc(6,:)=[ 0, 0,+1]
+         this%implicit%stc(7,:)=[ 0, 0,-1]
          
          ! Set the diagonal to 1 to make sure all cells participate in solver
          this%implicit%opr(1,:,:,:)=1.0_WP
@@ -554,16 +484,22 @@ contains
          do j=this%cfg%jmin_,this%cfg%jmax_+1
             do i=this%cfg%imin_,this%cfg%imax_+1
                ! Fluxes on x-face
-               FX(i,j,k)=-0.5_WP*(rhoU(i,j,k)+abs(rhoU(i,j,k)))*sum(this%itpsc_xp(:,i,j,k)*this%SC(i+this%stp1:i+this%stp2,j,k)) &
-               &         -0.5_WP*(rhoU(i,j,k)-abs(rhoU(i,j,k)))*sum(this%itpsc_xm(:,i,j,k)*this%SC(i+this%stm1:i+this%stm2,j,k)) &
+               ! FX(i,j,k)=-0.5_WP*(rhoU(i,j,k)+abs(rhoU(i,j,k)))*sum(this%itpsc_xp(:,i,j,k)*this%SC(i+this%stp1:i+this%stp2,j,k)) &
+               ! &         -0.5_WP*(rhoU(i,j,k)-abs(rhoU(i,j,k)))*sum(this%itpsc_xm(:,i,j,k)*this%SC(i+this%stm1:i+this%stm2,j,k)) &
+               ! &         +sum(this%itp_x(:,i,j,k)*this%diff(i-1:i,j,k))*sum(this%grdsc_x(:,i,j,k)*this%SC(i-1:i,j,k))
+               FX(i,j,k)=-rhoU(i,j,k)*sum(this%itp_x(:,i,j,k)*this%SCmid(i-1:i,j,k)) &
                &         +sum(this%itp_x(:,i,j,k)*this%diff(i-1:i,j,k))*sum(this%grdsc_x(:,i,j,k)*this%SC(i-1:i,j,k))
                ! Fluxes on y-face
-               FY(i,j,k)=-0.5_WP*(rhoV(i,j,k)+abs(rhoV(i,j,k)))*sum(this%itpsc_yp(:,i,j,k)*this%SC(i,j+this%stp1:j+this%stp2,k)) &
-               &         -0.5_WP*(rhoV(i,j,k)-abs(rhoV(i,j,k)))*sum(this%itpsc_ym(:,i,j,k)*this%SC(i,j+this%stm1:j+this%stm2,k)) &
+               ! FY(i,j,k)=-0.5_WP*(rhoV(i,j,k)+abs(rhoV(i,j,k)))*sum(this%itpsc_yp(:,i,j,k)*this%SC(i,j+this%stp1:j+this%stp2,k)) &
+               ! &         -0.5_WP*(rhoV(i,j,k)-abs(rhoV(i,j,k)))*sum(this%itpsc_ym(:,i,j,k)*this%SC(i,j+this%stm1:j+this%stm2,k)) &
+               ! &         +sum(this%itp_y(:,i,j,k)*this%diff(i,j-1:j,k))*sum(this%grdsc_y(:,i,j,k)*this%SC(i,j-1:j,k))
+               FY(i,j,k)=-rhoV(i,j,k)*sum(this%itp_y(:,i,j,k)*this%SCmid(i,j-1:j,k)) &
                &         +sum(this%itp_y(:,i,j,k)*this%diff(i,j-1:j,k))*sum(this%grdsc_y(:,i,j,k)*this%SC(i,j-1:j,k))
                ! Fluxes on z-face
-               FZ(i,j,k)=-0.5_WP*(rhoW(i,j,k)+abs(rhoW(i,j,k)))*sum(this%itpsc_zp(:,i,j,k)*this%SC(i,j,k+this%stp1:k+this%stp2)) &
-               &         -0.5_WP*(rhoW(i,j,k)-abs(rhoW(i,j,k)))*sum(this%itpsc_zm(:,i,j,k)*this%SC(i,j,k+this%stm1:k+this%stm2)) &
+               ! FZ(i,j,k)=-0.5_WP*(rhoW(i,j,k)+abs(rhoW(i,j,k)))*sum(this%itpsc_zp(:,i,j,k)*this%SC(i,j,k+this%stp1:k+this%stp2)) &
+               ! &         -0.5_WP*(rhoW(i,j,k)-abs(rhoW(i,j,k)))*sum(this%itpsc_zm(:,i,j,k)*this%SC(i,j,k+this%stm1:k+this%stm2)) &
+               ! &         +sum(this%itp_z(:,i,j,k)*this%diff(i,j,k-1:k))*sum(this%grdsc_z(:,i,j,k)*this%SC(i,j,k-1:k))
+               FZ(i,j,k)=-rhoW(i,j,k)*sum(this%itp_y(:,i,j,k)*this%SCmid(i,j,k-1:k)) &
                &         +sum(this%itp_z(:,i,j,k)*this%diff(i,j,k-1:k))*sum(this%grdsc_z(:,i,j,k)*this%SC(i,j,k-1:k))
             end do
          end do
@@ -675,69 +611,65 @@ contains
       integer :: i,j,k,sti,std
       
       ! If no implicit solver available, just divide by density and return
-      if (.not.associated(this%implicit)) then
-         resSC=resSC/this%rho
+      ! if (.not.associated(this%implicit)) then
+         resSC=resSC/(this%rho)
          call this%cfg%sync(resSC)
-         return
-      end if
+         ! return
+      ! end if
       
-      ! Prepare convective operator
-      do k=this%cfg%kmin_,this%cfg%kmax_
-         do j=this%cfg%jmin_,this%cfg%jmax_
-            do i=this%cfg%imin_,this%cfg%imax_
-               this%implicit%opr(1 ,i,j,k)=this%rho(i,j,k)
-               this%implicit%opr(2:,i,j,k)=0.0_WP
-            end do
-         end do
-      end do
-      do k=this%cfg%kmin_,this%cfg%kmax_
-         do j=this%cfg%jmin_,this%cfg%jmax_
-            do i=this%cfg%imin_,this%cfg%imax_
-               ! Loop over divergence stencil
-               do std=0,1
-                  ! Loop over plus interpolation stencil
-                  do sti=this%stp1,this%stp2
-                     this%implicit%opr(this%implicit%stmap(sti+std,0,0),i,j,k)=this%implicit%opr(this%implicit%stmap(sti+std,0,0),i,j,k)+0.5_WP*dt*this%divsc_x(std,i,j,k)*0.5_WP*(rhoU(i+std,j,k)+abs(rhoU(i+std,j,k)))*this%itpsc_xp(sti,i+std,j,k)
-                     this%implicit%opr(this%implicit%stmap(0,sti+std,0),i,j,k)=this%implicit%opr(this%implicit%stmap(0,sti+std,0),i,j,k)+0.5_WP*dt*this%divsc_y(std,i,j,k)*0.5_WP*(rhoV(i,j+std,k)+abs(rhoV(i,j+std,k)))*this%itpsc_yp(sti,i,j+std,k)
-                     this%implicit%opr(this%implicit%stmap(0,0,sti+std),i,j,k)=this%implicit%opr(this%implicit%stmap(0,0,sti+std),i,j,k)+0.5_WP*dt*this%divsc_z(std,i,j,k)*0.5_WP*(rhoW(i,j,k+std)+abs(rhoW(i,j,k+std)))*this%itpsc_zp(sti,i,j,k+std)
-                  end do
-                  ! Loop over minus interpolation stencil
-                  do sti=this%stm1,this%stm2
-                     this%implicit%opr(this%implicit%stmap(sti+std,0,0),i,j,k)=this%implicit%opr(this%implicit%stmap(sti+std,0,0),i,j,k)+0.5_WP*dt*this%divsc_x(std,i,j,k)*0.5_WP*(rhoU(i+std,j,k)-abs(rhoU(i+std,j,k)))*this%itpsc_xm(sti,i+std,j,k)
-                     this%implicit%opr(this%implicit%stmap(0,sti+std,0),i,j,k)=this%implicit%opr(this%implicit%stmap(0,sti+std,0),i,j,k)+0.5_WP*dt*this%divsc_y(std,i,j,k)*0.5_WP*(rhoV(i,j+std,k)-abs(rhoV(i,j+std,k)))*this%itpsc_ym(sti,i,j+std,k)
-                     this%implicit%opr(this%implicit%stmap(0,0,sti+std),i,j,k)=this%implicit%opr(this%implicit%stmap(0,0,sti+std),i,j,k)+0.5_WP*dt*this%divsc_z(std,i,j,k)*0.5_WP*(rhoW(i,j,k+std)-abs(rhoW(i,j,k+std)))*this%itpsc_zm(sti,i,j,k+std)
-                  end do
-               end do
-            end do
-         end do
-      end do
+      ! ! Prepare convective operator
+      ! this%implicit%opr(1,:,:,:)=this%rho; this%implicit%opr(2:,:,:,:)=0.0_WP
+      ! do k=this%cfg%kmin_,this%cfg%kmax_
+      !    do j=this%cfg%jmin_,this%cfg%jmax_
+      !       do i=this%cfg%imin_,this%cfg%imax_
+      !          rhoUp=sum(this%itpu_x(:,i  ,j,k)*this%rhoU(i  :i+1,j,k))
+      !          rhoUm=sum(this%itpu_x(:,i-1,j,k)*this%rhoU(i-1:i  ,j,k))
+      !          rhoVp=sum(this%itpv_x(:,i,j+1,k)*this%rhoV(i-1:i,j+1,k))
+      !          rhoVm=sum(this%itpv_x(:,i,j  ,k)*this%rhoV(i-1:i,j  ,k))
+      !          rhoWp=sum(this%itpw_x(:,i,j,k+1)*this%rhoW(i-1:i,j,k+1))
+      !          rhoWm=sum(this%itpw_x(:,i,j,k  )*this%rhoW(i-1:i,j,k  ))
+      !          this%implicit%opr(1,i,j,k)=this%implicit%opr(1,i,j,k)+dt*(this%divu_x( 0,i,j,k)*this%itpu_x( 0,i  ,j,k)*rhoUp+&
+      !          &                                                         this%divu_x(-1,i,j,k)*this%itpu_x(+1,i-1,j,k)*rhoUm+&
+      !          &                                                         this%divu_y(+1,i,j,k)*this%itpu_y(-1,i,j+1,k)*rhoVp+&
+      !          &                                                         this%divu_y( 0,i,j,k)*this%itpu_y( 0,i,j  ,k)*rhoVm+&
+      !          &                                                         this%divu_z(+1,i,j,k)*this%itpu_z(-1,i,j,k+1)*rhoWp+&
+      !          &                                                         this%divu_z( 0,i,j,k)*this%itpu_z( 0,i,j,k  )*rhoWm)*this%rho(i,j,k)  /(this%rho(i,j,k)  +this%rhoold(i,j,k)  *(1.0_WP-this%theta)/this%theta)
+      !          this%implicit%opr(2,i,j,k)=this%implicit%opr(2,i,j,k)+dt*(this%divu_x( 0,i,j,k)*this%itpu_x(+1,i  ,j,k)*rhoUp)*this%rho(i+1,j,k)/(this%rho(i+1,j,k)+this%rhoold(i+1,j,k)*(1.0_WP-this%theta)/this%theta)
+      !          this%implicit%opr(3,i,j,k)=this%implicit%opr(3,i,j,k)+dt*(this%divu_x(-1,i,j,k)*this%itpu_x( 0,i-1,j,k)*rhoUm)*this%rho(i-1,j,k)/(this%rho(i-1,j,k)+this%rhoold(i-1,j,k)*(1.0_WP-this%theta)/this%theta)
+      !          this%implicit%opr(4,i,j,k)=this%implicit%opr(4,i,j,k)+dt*(this%divu_y(+1,i,j,k)*this%itpu_y( 0,i,j+1,k)*rhoVp)*this%rho(i,j+1,k)/(this%rho(i,j+1,k)+this%rhoold(i,j+1,k)*(1.0_WP-this%theta)/this%theta)
+      !          this%implicit%opr(5,i,j,k)=this%implicit%opr(5,i,j,k)+dt*(this%divu_y( 0,i,j,k)*this%itpu_y(-1,i,j  ,k)*rhoVm)*this%rho(i,j-1,k)/(this%rho(i,j-1,k)+this%rhoold(i,j-1,k)*(1.0_WP-this%theta)/this%theta)
+      !          this%implicit%opr(6,i,j,k)=this%implicit%opr(6,i,j,k)+dt*(this%divu_z(+1,i,j,k)*this%itpu_z( 0,i,j,k+1)*rhoWp)*this%rho(i,j+1,k)/(this%rho(i,j,k+1)+this%rhoold(i,j,k+1)*(1.0_WP-this%theta)/this%theta)
+      !          this%implicit%opr(7,i,j,k)=this%implicit%opr(7,i,j,k)+dt*(this%divu_z( 0,i,j,k)*this%itpu_z(-1,i,j,k  )*rhoWm)*this%rho(i,j-1,k)/(this%rho(i,j,k-1)+this%rhoold(i,j,k-1)*(1.0_WP-this%theta)/this%theta)
+      !       end do
+      !    end do
+      ! end do
       
-      ! Prepare diffusive operator
-      do k=this%cfg%kmin_,this%cfg%kmax_
-         do j=this%cfg%jmin_,this%cfg%jmax_
-            do i=this%cfg%imin_,this%cfg%imax_
-               this%implicit%opr(1,i,j,k)=this%implicit%opr(1,i,j,k)-0.5_WP*dt*(this%divsc_x(+1,i,j,k)*sum(this%itp_x(:,i+1,j,k)*this%diff(i  :i+1,j,k))*this%grdsc_x(-1,i+1,j,k)+&
-               &                                                                this%divsc_x( 0,i,j,k)*sum(this%itp_x(:,i  ,j,k)*this%diff(i-1:i  ,j,k))*this%grdsc_x( 0,i  ,j,k)+&
-               &                                                                this%divsc_y(+1,i,j,k)*sum(this%itp_y(:,i,j+1,k)*this%diff(i,j  :j+1,k))*this%grdsc_y(-1,i,j+1,k)+&
-               &                                                                this%divsc_y( 0,i,j,k)*sum(this%itp_y(:,i,j  ,k)*this%diff(i,j-1:j  ,k))*this%grdsc_y( 0,i,j  ,k)+&
-               &                                                                this%divsc_z(+1,i,j,k)*sum(this%itp_z(:,i,j,k+1)*this%diff(i,j,k  :k+1))*this%grdsc_z(-1,i,j,k+1)+&
-               &                                                                this%divsc_z( 0,i,j,k)*sum(this%itp_z(:,i,j,k  )*this%diff(i,j,k-1:k  ))*this%grdsc_z( 0,i,j,k  ))
-               this%implicit%opr(2,i,j,k)=this%implicit%opr(2,i,j,k)-0.5_WP*dt*(this%divsc_x(+1,i,j,k)*sum(this%itp_x(:,i+1,j,k)*this%diff(i  :i+1,j,k))*this%grdsc_x( 0,i+1,j,k))
-               this%implicit%opr(3,i,j,k)=this%implicit%opr(3,i,j,k)-0.5_WP*dt*(this%divsc_x( 0,i,j,k)*sum(this%itp_x(:,i  ,j,k)*this%diff(i-1:i  ,j,k))*this%grdsc_x(-1,i  ,j,k))
-               this%implicit%opr(4,i,j,k)=this%implicit%opr(4,i,j,k)-0.5_WP*dt*(this%divsc_y(+1,i,j,k)*sum(this%itp_y(:,i,j+1,k)*this%diff(i,j  :j+1,k))*this%grdsc_y( 0,i,j+1,k))
-               this%implicit%opr(5,i,j,k)=this%implicit%opr(5,i,j,k)-0.5_WP*dt*(this%divsc_y( 0,i,j,k)*sum(this%itp_y(:,i,j  ,k)*this%diff(i,j-1:j  ,k))*this%grdsc_y(-1,i,j  ,k))
-               this%implicit%opr(6,i,j,k)=this%implicit%opr(6,i,j,k)-0.5_WP*dt*(this%divsc_z(+1,i,j,k)*sum(this%itp_z(:,i,j,k+1)*this%diff(i,j,k  :k+1))*this%grdsc_z( 0,i,j,k+1))
-               this%implicit%opr(7,i,j,k)=this%implicit%opr(7,i,j,k)-0.5_WP*dt*(this%divsc_z( 0,i,j,k)*sum(this%itp_z(:,i,j,k  )*this%diff(i,j,k-1:k  ))*this%grdsc_z(-1,i,j,k  ))
-            end do
-         end do
-      end do
+      ! ! Prepare diffusive operator
+      ! do k=this%cfg%kmin_,this%cfg%kmax_
+      !    do j=this%cfg%jmin_,this%cfg%jmax_
+      !       do i=this%cfg%imin_,this%cfg%imax_
+      !          this%implicit%opr(1,i,j,k)=this%implicit%opr(1,i,j,k)-0.5_WP*dt*(this%divsc_x(+1,i,j,k)*sum(this%itp_x(:,i+1,j,k)*this%diff(i  :i+1,j,k))*this%grdsc_x(-1,i+1,j,k)+&
+      !          &                                                                this%divsc_x( 0,i,j,k)*sum(this%itp_x(:,i  ,j,k)*this%diff(i-1:i  ,j,k))*this%grdsc_x( 0,i  ,j,k)+&
+      !          &                                                                this%divsc_y(+1,i,j,k)*sum(this%itp_y(:,i,j+1,k)*this%diff(i,j  :j+1,k))*this%grdsc_y(-1,i,j+1,k)+&
+      !          &                                                                this%divsc_y( 0,i,j,k)*sum(this%itp_y(:,i,j  ,k)*this%diff(i,j-1:j  ,k))*this%grdsc_y( 0,i,j  ,k)+&
+      !          &                                                                this%divsc_z(+1,i,j,k)*sum(this%itp_z(:,i,j,k+1)*this%diff(i,j,k  :k+1))*this%grdsc_z(-1,i,j,k+1)+&
+      !          &                                                                this%divsc_z( 0,i,j,k)*sum(this%itp_z(:,i,j,k  )*this%diff(i,j,k-1:k  ))*this%grdsc_z( 0,i,j,k  ))
+      !          this%implicit%opr(2,i,j,k)=this%implicit%opr(2,i,j,k)-0.5_WP*dt*(this%divsc_x(+1,i,j,k)*sum(this%itp_x(:,i+1,j,k)*this%diff(i  :i+1,j,k))*this%grdsc_x( 0,i+1,j,k))
+      !          this%implicit%opr(3,i,j,k)=this%implicit%opr(3,i,j,k)-0.5_WP*dt*(this%divsc_x( 0,i,j,k)*sum(this%itp_x(:,i  ,j,k)*this%diff(i-1:i  ,j,k))*this%grdsc_x(-1,i  ,j,k))
+      !          this%implicit%opr(4,i,j,k)=this%implicit%opr(4,i,j,k)-0.5_WP*dt*(this%divsc_y(+1,i,j,k)*sum(this%itp_y(:,i,j+1,k)*this%diff(i,j  :j+1,k))*this%grdsc_y( 0,i,j+1,k))
+      !          this%implicit%opr(5,i,j,k)=this%implicit%opr(5,i,j,k)-0.5_WP*dt*(this%divsc_y( 0,i,j,k)*sum(this%itp_y(:,i,j  ,k)*this%diff(i,j-1:j  ,k))*this%grdsc_y(-1,i,j  ,k))
+      !          this%implicit%opr(6,i,j,k)=this%implicit%opr(6,i,j,k)-0.5_WP*dt*(this%divsc_z(+1,i,j,k)*sum(this%itp_z(:,i,j,k+1)*this%diff(i,j,k  :k+1))*this%grdsc_z( 0,i,j,k+1))
+      !          this%implicit%opr(7,i,j,k)=this%implicit%opr(7,i,j,k)-0.5_WP*dt*(this%divsc_z( 0,i,j,k)*sum(this%itp_z(:,i,j,k  )*this%diff(i,j,k-1:k  ))*this%grdsc_z(-1,i,j,k  ))
+      !       end do
+      !    end do
+      ! end do
       
-      ! Solve the linear system
-      call this%implicit%setup()
-      this%implicit%rhs=resSC
-      this%implicit%sol=0.0_WP
-      call this%implicit%solve()
-      resSC=this%implicit%sol
+      ! ! Solve the linear system
+      ! call this%implicit%setup()
+      ! this%implicit%rhs=resSC
+      ! this%implicit%sol=0.0_WP
+      ! call this%implicit%solve()
+      ! resSC=this%implicit%sol
       
    end subroutine solve_implicit
    

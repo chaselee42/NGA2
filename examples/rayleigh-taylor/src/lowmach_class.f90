@@ -142,6 +142,7 @@ module lowmach_class
       procedure :: get_dmomdt                             !< Calculate dmom/dt
       procedure :: get_div                                !< Calculate velocity divergence
       procedure :: get_pgrad                              !< Calculate pressure gradient
+      procedure :: update_laplacian                       !< Update the pressure Laplacian div(1/rho*grad(.))
       procedure :: update_density                         !< Calculate sqrt of face density from scalar transport
       procedure :: rho_divide                             !< Form U from rhoU
       procedure :: rho_multiply                           !< Form rhoU from U
@@ -1137,7 +1138,7 @@ contains
    !> Explicitly calculate the time derivative of momentum given Umid and rhoU
    subroutine get_dmomdt(this,drhoUdt,drhoVdt,drhoWdt)
       implicit none
-      class(tpns), intent(inout) :: this
+      class(lowmach), intent(inout) :: this
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: drhoUdt !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: drhoVdt !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: drhoWdt !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
@@ -1281,7 +1282,6 @@ contains
       call this%cfg%sync(this%div)
    end subroutine get_div
    
-   
    !> Calculate the pressure gradient based on P
    subroutine get_pgrad(this,P,Pgradx,Pgrady,Pgradz)
       implicit none
@@ -1306,6 +1306,34 @@ contains
       call this%cfg%sync(Pgrady)
       call this%cfg%sync(Pgradz)
    end subroutine get_pgrad
+
+   !> Update pressure Poisson operator
+   subroutine update_laplacian(this)
+      implicit none
+      class(lowmach), intent(inout) :: this
+      integer :: i,j,k,s1,s2
+      ! Setup the scaled Laplacian operator from  metrics: lap(*)=-vol.div(grad(*)/rho)
+      do k=this%cfg%kmin_,this%cfg%kmax_
+         do j=this%cfg%jmin_,this%cfg%jmax_
+            do i=this%cfg%imin_,this%cfg%imax_
+               ! Zero out Laplacian
+               this%psolv%opr(:,i,j,k)=0.0_WP
+               ! Tranverse the stencil and recompute Laplacian
+               do s1=0,1
+                  do s2=-1,0
+                     this%psolv%opr(this%psolv%stmap(s1+s2,0,0),i,j,k)=this%psolv%opr(this%psolv%stmap(s1+s2,0,0),i,j,k)+this%divp_x(s1,i,j,k)*this%divu_x(s2,i+s1,j,k)/((this%sRHOX(i+s1,j,k)+this%sRHOXold(i+s1,j,k)*(1.0_WP-this%theta)/this%theta)*this%sRHOX(i+s1,j,k))
+                     this%psolv%opr(this%psolv%stmap(0,s1+s2,0),i,j,k)=this%psolv%opr(this%psolv%stmap(0,s1+s2,0),i,j,k)+this%divp_y(s1,i,j,k)*this%divv_y(s2,i,j+s1,k)/((this%sRHOY(i,j+s1,k)+this%sRHOYold(i,j+s1,k)*(1.0_WP-this%theta)/this%theta)*this%sRHOY(i,j+s1,k))
+                     this%psolv%opr(this%psolv%stmap(0,0,s1+s2),i,j,k)=this%psolv%opr(this%psolv%stmap(0,0,s1+s2),i,j,k)+this%divp_z(s1,i,j,k)*this%divw_z(s2,i,j,k+s1)/((this%sRHOZ(i,j,k+s1)+this%sRHOZold(i,j,k+s1)*(1.0_WP-this%theta)/this%theta)*this%sRHOZ(i,j,k+s1))
+                  end do
+               end do
+               ! Scale Laplacian by cell volume
+               this%psolv%opr(:,i,j,k)=-this%psolv%opr(:,i,j,k)*this%cfg%vol(i,j,k)
+            end do
+         end do
+      end do
+      ! Initialize the pressure Poisson solver
+      call this%psolv%setup()
+   end subroutine update_laplacian
    
    !> Update density from rho field at n+1
    subroutine update_density(this,rho)
@@ -1353,9 +1381,9 @@ contains
       do k=this%cfg%kmin_,this%cfg%kmax_+1
          do j=this%cfg%jmin_,this%cfg%jmax_+1
             do i=this%cfg%imin_,this%cfg%imax_+1
-               this%U(i,j,k)=this%rhoU(i,j,k)/sum(this%itpr_x(:,i,j,k)*this%rho(i-1:i,j,k))
-               this%V(i,j,k)=this%rhoV(i,j,k)/sum(this%itpr_y(:,i,j,k)*this%rho(i,j-1:j,k))
-               this%W(i,j,k)=this%rhoW(i,j,k)/sum(this%itpr_z(:,i,j,k)*this%rho(i,j,k-1:k))
+               this%U(i,j,k)=this%rhoU(i,j,k)/(this%sRHOX(i,j,k)**2)
+               this%V(i,j,k)=this%rhoV(i,j,k)/(this%sRHOY(i,j,k)**2)
+               this%W(i,j,k)=this%rhoW(i,j,k)/(this%sRHOZ(i,j,k)**2)
             end do
          end do
       end do

@@ -1,15 +1,3 @@
-# Parallelization
-Partition : 2 4 1
-
-# Mesh definition
-Lx :  8
-Ly :  8
-Lz :  8
-nx :  256
-ny :  256
-nz :  1
-X0 : -3
-
 # Adimensional flow parameters
 !---------- eos ----------
 Gas gamma :         1.3
@@ -19,15 +7,35 @@ Density ratio :     815
 Sound speed ratio : 4.3
 !------- inviscid --------
 Shock Mach number : 5.12
-Shock location :   -2
+Shock location :   -0.6
 !------- viscous ---------
-Gas Reynolds number : 1e4
+Gas Reynolds number : 1e5
 Viscosity ratio :     58.3
 
-# Time integration
-Max timestep size : 0.4e-2
-Max cfl number :    1.0
-Max time :          50
+# Maximum simulation time
+Max time : 30
 
-# Ensight output
-Ensight output period : 1e-3
+# Postprocessing output
+Ensight output period : 0.1
+Drop analysis period :  0.1
+
+# Shock-drop simulation
+!- Parallelization ----
+Shock-drop partition : 3 4 1
+!- Mesh ---------------
+Shock-drop dx :     0.01
+Shock-drop max nz : 1
+Shock-drop margin : 0.25
+!- Time ---------------
+Shock-drop dt :  2.5e-3
+Shock-drop CFL : 0.1
+!- Remeshing ----------
+Remeshing period : 0.2
+
+# Far-field simulation
+!- Parallelization ----
+Farfield partition : 3 4 1
+!- Mesh ---------------
+Farfield dx : 0.03
+Farfield nx : 250 250 1!200
+Farfield X0 : -2

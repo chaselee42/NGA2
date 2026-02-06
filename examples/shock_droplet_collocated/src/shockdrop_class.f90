@@ -13,41 +13,41 @@ module shockdrop_class
    use monitor_class,     only: monitor
    implicit none
    private
-   
+
    public :: shockdrop
-   
+
    !> Shockdrop object
    type :: shockdrop
-      
+
       !> Config
       type(config) :: cfg
-      
+
       !> Flow solver
       type(mpcomp) :: fs        !< Multiphase compressible solver
       type(timetracker) :: time !< Time info
-      
+
       !> CCL for postprocessing
       type(cclabel) :: ccl
-      
+
       !> Ensight postprocessing
       type(surfmesh) :: smesh
       type(ensight)  :: ens_out
-      
+
       !> Simulation monitor file
       type(monitor) :: mfile,cflfile,consfile,dropfile,meshfile
-      
+
       !> Work arrays
       real(WP), dimension(:,:,:,:,:), allocatable :: dQdt
       real(WP), dimension(:,:,:)    , allocatable :: Ma,beta,visc
-      
+
       !> Constant phasic kinematic viscosities
       real(WP) :: cst_viscL,cst_viscG
-      
+
       !> Various post-processing info
       real(WP) :: Vcore,Mcore,Xcore,Ycore,Zcore !< Drop core data
       real(WP), dimension(3) :: Cmin,Cmax       !< Core extent
-      
-      
+
+
    contains
       procedure :: initialize                      !< Initialize shock-drop simulation
       procedure :: step                            !< Advance shock-drop simulation by one time step
@@ -59,10 +59,10 @@ module shockdrop_class
       procedure :: apply_bconds                    !< Apply boundary conditions
       procedure :: finalize                        !< Finalize shock-drop simulation
    end type shockdrop
-   
+
 contains
-   
-   
+
+
    !> Various postprocessing
    subroutine postproc(this)
       use mpi_f08,  only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE,MPI_MIN,MPI_MAX
@@ -131,8 +131,8 @@ contains
          end if
       end function same_label
    end subroutine postproc
-   
-   
+
+
    !> Analysis of droplets
    subroutine analyze_drops(this)
       use mpi_f08,   only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE
@@ -146,14 +146,14 @@ contains
       real(WP), dimension(:)  , allocatable :: Vd,Md,Pd
       real(WP), dimension(:,:), allocatable :: Bd,Ud
       character(len=str_medium) :: filename,timestamp
-      
+
       ! Allocate volume, mass, pressure, barycenter, and velocity arrays
       allocate(Vd(    1:this%ccl%nstruct)); Vd=0.0_WP
       allocate(Md(    1:this%ccl%nstruct)); Md=0.0_WP
       allocate(Pd(    1:this%ccl%nstruct)); Pd=0.0_WP
       allocate(Bd(1:3,1:this%ccl%nstruct)); Bd=0.0_WP
       allocate(Ud(1:3,1:this%ccl%nstruct)); Ud=0.0_WP
-      
+
       ! Loop over individual structures and compute structure properties
       do n=1,this%ccl%nstruct
          ! Loop over cells in structure and accumulate data
@@ -175,7 +175,7 @@ contains
       call MPI_ALLREDUCE(MPI_IN_PLACE,Pd,  this%ccl%nstruct,MPI_REAL_WP,MPI_SUM,this%fs%cfg%comm,ierr); Pd=Pd/Vd
       call MPI_ALLREDUCE(MPI_IN_PLACE,Bd,3*this%ccl%nstruct,MPI_REAL_WP,MPI_SUM,this%fs%cfg%comm,ierr); do n=1,this%ccl%nstruct; Bd(:,n)=Bd(:,n)/Md(n); end do
       call MPI_ALLREDUCE(MPI_IN_PLACE,Ud,3*this%ccl%nstruct,MPI_REAL_WP,MPI_SUM,this%fs%cfg%comm,ierr); do n=1,this%ccl%nstruct; Ud(:,n)=Ud(:,n)/Md(n); end do
-      
+
       ! Only root process outputs to a file
       if (this%cfg%amRoot) then
          ! Ensure we have a directory
@@ -193,13 +193,13 @@ contains
          ! Close the file
          close(iunit)
       end if
-      
+
       ! Deallocate memory
       deallocate(Vd,Md,Pd,Bd,Ud)
-      
+
    end subroutine analyze_drops
-   
-   
+
+
    !> Initialization of a shock-drop problem
    subroutine initialize(this,dx,meshsize,startloc,group,partition,continue_monitor)
       use mpi_f08, only: MPI_Group
@@ -217,7 +217,7 @@ contains
       is_monitor_continued: block
          monitor_continue=.false.; if (present(continue_monitor)) monitor_continue=continue_monitor
       end block is_monitor_continued
-      
+
       ! Initialize config object
       create_config: block
          use sgrid_class, only: cartesian,sgrid
@@ -382,8 +382,8 @@ contains
       end block create_monitor
 
    end subroutine initialize
-   
-   
+
+
    !> Take one time step
    subroutine step(this,dt)
       implicit none
@@ -413,8 +413,8 @@ contains
          use irl_fortran_interface, only: copy
          integer :: i,j,k
          do k=this%fs%cfg%kmino_,this%fs%cfg%kmaxo_; do j=this%fs%cfg%jmino_,this%fs%cfg%jmaxo_; do i=this%fs%cfg%imino_,this%fs%cfg%imaxo_
-            call copy(this%fs%PLICold(i,j,k),this%fs%PLIC(i,j,k))
-         end do; end do; end do
+                  call copy(this%fs%PLICold(i,j,k),this%fs%PLIC(i,j,k))
+               end do; end do; end do
       end block copy_plic_to_old
 
       ! Tag cells for semi-Lagrangian transport
@@ -454,9 +454,9 @@ contains
       ! ! Third RK step ====================================================================================
       ! ! Get non-SL RHS and increment
       call this%fs%rhs(this%dQdt(:,:,:,:,3))
-      this%fs%Q=this%fs%Q+1.0_WP*this%time%dt*this%dQdt(:,:,:,:,3)
+      this%fs%Q=this%fs%Qold+1.0_WP*this%time%dt*this%dQdt(:,:,:,:,3)
       ! ! Increment Q with SL terms
-      this%fs%Q=this%fs%Qold+this%fs%SLdQ
+      this%fs%Q=this%fs%Q+this%fs%SLdQ
       ! ! Recompute primitive variables
       call this%fs%get_primitive()
 
@@ -478,8 +478,8 @@ contains
       this%Ma=sqrt(this%fs%U**2+this%fs%V**2+this%fs%W**2)/this%fs%C
 
    end subroutine step
-   
-   
+
+
    !> Perform and output monitoring for the shockdrop problem
    subroutine output_monitor(this)
       implicit none
@@ -491,8 +491,8 @@ contains
       call this%consfile%write()
       call this%dropfile%write()
    end subroutine output_monitor
-   
-   
+
+
    !> Output ensight files for the shockdrop problem
    subroutine output_ensight(this,t)
       use irl_fortran_interface, only: getNumberOfVertices
@@ -520,8 +520,8 @@ contains
          call this%ens_out%write_data(this%time%t)
       end if
    end subroutine output_ensight
-   
-   
+
+
    !> Calculate viscosities
    subroutine prepare_viscosities(this)
       implicit none
@@ -537,157 +537,157 @@ contains
       call this%fs%get_vreman   (dt=this%time%dt,visc=this%visc)
       ! Create mixture viscosities
       do k=this%fs%cfg%kmino_+1,this%fs%cfg%kmaxo_-1; do j=this%fs%cfg%jmino_+1,this%fs%cfg%jmaxo_-1; do i=this%fs%cfg%imino_+1,this%fs%cfg%imaxo_-1
-         ! Create smooth mass info distribution
-         Lvof=sum(       this%fs%VF(i-1:i+1,j-1:j+1,k-1:k+1)  )
-         Gvof=sum(1.0_WP-this%fs%VF(i-1:i+1,j-1:j+1,k-1:k+1)  )
-         Lrho=sum(       this%fs%Q (i-1:i+1,j-1:j+1,k-1:k+1,1))/(Lvof+eps)
-         Grho=sum(       this%fs%Q (i-1:i+1,j-1:j+1,k-1:k+1,2))/(Gvof+eps)
-         ! Harmonic average of VISC
-         Lvisc=Lrho*(this%cst_viscL+this%visc(i,j,k)); Gvisc=Grho*(this%cst_viscG+this%visc(i,j,k)); this%fs%VISC(i,j,k)=(Lvof+Gvof)/(Lvof/max(Lvisc,eps)+Gvof/max(Gvisc,eps))
-         ! Harmonic average of BETA
-         Lbeta=Lrho*this%beta(i,j,k); Gbeta=Grho*this%beta(i,j,k); this%fs%BETA(i,j,k)=(Lvof+Gvof)/(Lvof/max(Lbeta,eps)+Gvof/max(Gbeta,eps))
-         ! Try adding BETA to visc
-         this%fs%VISC(i,j,k)=this%fs%VISC(i,j,k)+Cb2v*this%fs%BETA(i,j,k)
-      end do; end do; end do
+               ! Create smooth mass info distribution
+               Lvof=sum(       this%fs%VF(i-1:i+1,j-1:j+1,k-1:k+1)  )
+               Gvof=sum(1.0_WP-this%fs%VF(i-1:i+1,j-1:j+1,k-1:k+1)  )
+               Lrho=sum(       this%fs%Q (i-1:i+1,j-1:j+1,k-1:k+1,1))/(Lvof+eps)
+               Grho=sum(       this%fs%Q (i-1:i+1,j-1:j+1,k-1:k+1,2))/(Gvof+eps)
+               ! Harmonic average of VISC
+               Lvisc=Lrho*(this%cst_viscL+this%visc(i,j,k)); Gvisc=Grho*(this%cst_viscG+this%visc(i,j,k)); this%fs%VISC(i,j,k)=(Lvof+Gvof)/(Lvof/max(Lvisc,eps)+Gvof/max(Gvisc,eps))
+               ! Harmonic average of BETA
+               Lbeta=Lrho*this%beta(i,j,k); Gbeta=Grho*this%beta(i,j,k); this%fs%BETA(i,j,k)=(Lvof+Gvof)/(Lvof/max(Lbeta,eps)+Gvof/max(Gbeta,eps))
+               ! Try adding BETA to visc
+               this%fs%VISC(i,j,k)=this%fs%VISC(i,j,k)+Cb2v*this%fs%BETA(i,j,k)
+            end do; end do; end do
    end subroutine prepare_viscosities
-   
-   
+
+
    !> Apply boundary conditions
    subroutine apply_bconds(this)
       use irl_fortran_interface, only: setPlane
       implicit none
       class(shockdrop), intent(inout) :: this
       integer :: i,j,k
-      
+
       ! Apply UNclipped Neumann on primitive variables in x+
       if (.not.this%fs%cfg%xper.and.this%fs%cfg%iproc.eq.this%fs%cfg%npx) then
          do k=this%fs%cfg%kmino_,this%fs%cfg%kmaxo_; do j=this%fs%cfg%jmino_,this%fs%cfg%jmaxo_
-            ! Copy over from imax to imax+1 and above
-            do i=this%fs%cfg%imax+1,this%fs%cfg%imaxo
-               ! Copy primitive variables
-               this%fs%RHOL(i,j,k)=this%fs%RHOL(this%fs%cfg%imax,j,k)
-               this%fs%PL  (i,j,k)=this%fs%PL  (this%fs%cfg%imax,j,k)
-               this%fs%IL  (i,j,k)=this%fs%IL  (this%fs%cfg%imax,j,k)
-               this%fs%RHOG(i,j,k)=this%fs%RHOG(this%fs%cfg%imax,j,k)
-               this%fs%PG  (i,j,k)=this%fs%PG  (this%fs%cfg%imax,j,k)
-               this%fs%IG  (i,j,k)=this%fs%IG  (this%fs%cfg%imax,j,k)
-               !this%fs%U  (i,j,k)=max(this%fs%U(this%fs%cfg%imax,j,k),0.0_WP)
-               this%fs%U   (i,j,k)=this%fs%U   (this%fs%cfg%imax,j,k)
-               this%fs%V   (i,j,k)=this%fs%V   (this%fs%cfg%imax,j,k)
-               this%fs%W   (i,j,k)=this%fs%W   (this%fs%cfg%imax,j,k)
-               this%fs%VF  (i,j,k)=this%fs%VF  (this%fs%cfg%imax,j,k)
-               ! Also adjust interface data
-               call setPlane(this%fs%PLIC(i,j,k),0,[+1.0_WP,0.0_WP,0.0_WP],this%fs%cfg%x(i)+this%fs%dx*this%fs%VF(i,j,k))
-               this%fs%BL(:,i,j,k)=[this%fs%cfg%xm(i),this%fs%cfg%ym(j),this%fs%cfg%zm(k)]
-               this%fs%BG(:,i,j,k)=[this%fs%cfg%xm(i),this%fs%cfg%ym(j),this%fs%cfg%zm(k)]
-            end do
-         end do; end do
+               ! Copy over from imax to imax+1 and above
+               do i=this%fs%cfg%imax+1,this%fs%cfg%imaxo
+                  ! Copy primitive variables
+                  this%fs%RHOL(i,j,k)=this%fs%RHOL(this%fs%cfg%imax,j,k)
+                  this%fs%PL  (i,j,k)=this%fs%PL  (this%fs%cfg%imax,j,k)
+                  this%fs%IL  (i,j,k)=this%fs%IL  (this%fs%cfg%imax,j,k)
+                  this%fs%RHOG(i,j,k)=this%fs%RHOG(this%fs%cfg%imax,j,k)
+                  this%fs%PG  (i,j,k)=this%fs%PG  (this%fs%cfg%imax,j,k)
+                  this%fs%IG  (i,j,k)=this%fs%IG  (this%fs%cfg%imax,j,k)
+                  !this%fs%U  (i,j,k)=max(this%fs%U(this%fs%cfg%imax,j,k),0.0_WP)
+                  this%fs%U   (i,j,k)=this%fs%U   (this%fs%cfg%imax,j,k)
+                  this%fs%V   (i,j,k)=this%fs%V   (this%fs%cfg%imax,j,k)
+                  this%fs%W   (i,j,k)=this%fs%W   (this%fs%cfg%imax,j,k)
+                  this%fs%VF  (i,j,k)=this%fs%VF  (this%fs%cfg%imax,j,k)
+                  ! Also adjust interface data
+                  call setPlane(this%fs%PLIC(i,j,k),0,[+1.0_WP,0.0_WP,0.0_WP],this%fs%cfg%x(i)+this%fs%dx*this%fs%VF(i,j,k))
+                  this%fs%BL(:,i,j,k)=[this%fs%cfg%xm(i),this%fs%cfg%ym(j),this%fs%cfg%zm(k)]
+                  this%fs%BG(:,i,j,k)=[this%fs%cfg%xm(i),this%fs%cfg%ym(j),this%fs%cfg%zm(k)]
+               end do
+            end do; end do
       end if
-      
+
       ! Apply UNclipped Neumann on primitive variables in y+
       if (.not.this%fs%cfg%yper.and.this%fs%cfg%jproc.eq.this%fs%cfg%npy) then
          do k=this%fs%cfg%kmino_,this%fs%cfg%kmaxo_; do i=this%fs%cfg%imino_,this%fs%cfg%imaxo_
-            ! Copy over from jmax to jmax+1 and above
-            do j=this%fs%cfg%jmax+1,this%fs%cfg%jmaxo
-               ! Copy primitive variables
-               this%fs%RHOL(i,j,k)=this%fs%RHOL(i,this%fs%cfg%jmax,k)
-               this%fs%PL  (i,j,k)=this%fs%PL  (i,this%fs%cfg%jmax,k)
-               this%fs%IL  (i,j,k)=this%fs%IL  (i,this%fs%cfg%jmax,k)
-               this%fs%RHOG(i,j,k)=this%fs%RHOG(i,this%fs%cfg%jmax,k)
-               this%fs%PG  (i,j,k)=this%fs%PG  (i,this%fs%cfg%jmax,k)
-               this%fs%IG  (i,j,k)=this%fs%IG  (i,this%fs%cfg%jmax,k)
-               this%fs%U   (i,j,k)=this%fs%U   (i,this%fs%cfg%jmax,k)
-               !this%fs%V  (i,j,k)=max(this%fs%V(i,this%fs%cfg%jmax,k),0.0_WP)
-               this%fs%V   (i,j,k)=this%fs%V   (i,this%fs%cfg%jmax,k)
-               this%fs%W   (i,j,k)=this%fs%W   (i,this%fs%cfg%jmax,k)
-               this%fs%VF  (i,j,k)=this%fs%VF  (i,this%fs%cfg%jmax,k)
-               ! Also adjust interface data
-               call setPlane(this%fs%PLIC(i,j,k),0,[0.0_WP,+1.0_WP,0.0_WP],this%fs%cfg%y(j)+this%fs%dy*this%fs%VF(i,j,k))
-               this%fs%BL(:,i,j,k)=[this%fs%cfg%xm(i),this%fs%cfg%ym(j),this%fs%cfg%zm(k)]
-               this%fs%BG(:,i,j,k)=[this%fs%cfg%xm(i),this%fs%cfg%ym(j),this%fs%cfg%zm(k)]
-            end do
-         end do; end do
+               ! Copy over from jmax to jmax+1 and above
+               do j=this%fs%cfg%jmax+1,this%fs%cfg%jmaxo
+                  ! Copy primitive variables
+                  this%fs%RHOL(i,j,k)=this%fs%RHOL(i,this%fs%cfg%jmax,k)
+                  this%fs%PL  (i,j,k)=this%fs%PL  (i,this%fs%cfg%jmax,k)
+                  this%fs%IL  (i,j,k)=this%fs%IL  (i,this%fs%cfg%jmax,k)
+                  this%fs%RHOG(i,j,k)=this%fs%RHOG(i,this%fs%cfg%jmax,k)
+                  this%fs%PG  (i,j,k)=this%fs%PG  (i,this%fs%cfg%jmax,k)
+                  this%fs%IG  (i,j,k)=this%fs%IG  (i,this%fs%cfg%jmax,k)
+                  this%fs%U   (i,j,k)=this%fs%U   (i,this%fs%cfg%jmax,k)
+                  !this%fs%V  (i,j,k)=max(this%fs%V(i,this%fs%cfg%jmax,k),0.0_WP)
+                  this%fs%V   (i,j,k)=this%fs%V   (i,this%fs%cfg%jmax,k)
+                  this%fs%W   (i,j,k)=this%fs%W   (i,this%fs%cfg%jmax,k)
+                  this%fs%VF  (i,j,k)=this%fs%VF  (i,this%fs%cfg%jmax,k)
+                  ! Also adjust interface data
+                  call setPlane(this%fs%PLIC(i,j,k),0,[0.0_WP,+1.0_WP,0.0_WP],this%fs%cfg%y(j)+this%fs%dy*this%fs%VF(i,j,k))
+                  this%fs%BL(:,i,j,k)=[this%fs%cfg%xm(i),this%fs%cfg%ym(j),this%fs%cfg%zm(k)]
+                  this%fs%BG(:,i,j,k)=[this%fs%cfg%xm(i),this%fs%cfg%ym(j),this%fs%cfg%zm(k)]
+               end do
+            end do; end do
       end if
-      
+
       ! Apply UNclipped Neumann on primitive variables in y-
       if (.not.this%fs%cfg%yper.and.this%fs%cfg%jproc.eq.1) then
          do k=this%fs%cfg%kmino_,this%fs%cfg%kmaxo_; do i=this%fs%cfg%imino_,this%fs%cfg%imaxo_
-            ! First copy over V from jmin+1 to jmin
-            this%fs%V(i,this%fs%cfg%jmin,k)=min(this%fs%V(i,this%fs%cfg%jmin+1,k),0.0_WP)
-            ! Then copy over from jmin to jmin-1 and below
-            do j=this%fs%cfg%jmino,this%fs%cfg%jmin-1
-               ! Copy primitive variables
-               this%fs%RHOL(i,j,k)=this%fs%RHOL(i,this%fs%cfg%jmin,k)
-               this%fs%PL  (i,j,k)=this%fs%PL  (i,this%fs%cfg%jmin,k)
-               this%fs%IL  (i,j,k)=this%fs%IL  (i,this%fs%cfg%jmin,k)
-               this%fs%RHOG(i,j,k)=this%fs%RHOG(i,this%fs%cfg%jmin,k)
-               this%fs%PG  (i,j,k)=this%fs%PG  (i,this%fs%cfg%jmin,k)
-               this%fs%IG  (i,j,k)=this%fs%IG  (i,this%fs%cfg%jmin,k)
-               this%fs%U   (i,j,k)=this%fs%U   (i,this%fs%cfg%jmin,k)
-               !this%fs%V  (i,j,k)=min(this%fs%V(i,this%fs%cfg%jmin,k),0.0_WP)
-               this%fs%V   (i,j,k)=this%fs%V   (i,this%fs%cfg%jmin,k)
-               this%fs%W   (i,j,k)=this%fs%W   (i,this%fs%cfg%jmin,k)
-               this%fs%VF  (i,j,k)=this%fs%VF  (i,this%fs%cfg%jmin,k)
-               ! Also adjust interface data
-               call setPlane(this%fs%PLIC(i,j,k),0,[0.0_WP,-1.0_WP,0.0_WP],-this%fs%cfg%y(j+1)+this%fs%dy*this%fs%VF(i,j,k))
-               this%fs%BL(:,i,j,k)=[this%fs%cfg%xm(i),this%fs%cfg%ym(j),this%fs%cfg%zm(k)]
-               this%fs%BG(:,i,j,k)=[this%fs%cfg%xm(i),this%fs%cfg%ym(j),this%fs%cfg%zm(k)]
-            end do
-         end do; end do
+               ! First copy over V from jmin+1 to jmin
+               this%fs%V(i,this%fs%cfg%jmin,k)=min(this%fs%V(i,this%fs%cfg%jmin+1,k),0.0_WP)
+               ! Then copy over from jmin to jmin-1 and below
+               do j=this%fs%cfg%jmino,this%fs%cfg%jmin-1
+                  ! Copy primitive variables
+                  this%fs%RHOL(i,j,k)=this%fs%RHOL(i,this%fs%cfg%jmin,k)
+                  this%fs%PL  (i,j,k)=this%fs%PL  (i,this%fs%cfg%jmin,k)
+                  this%fs%IL  (i,j,k)=this%fs%IL  (i,this%fs%cfg%jmin,k)
+                  this%fs%RHOG(i,j,k)=this%fs%RHOG(i,this%fs%cfg%jmin,k)
+                  this%fs%PG  (i,j,k)=this%fs%PG  (i,this%fs%cfg%jmin,k)
+                  this%fs%IG  (i,j,k)=this%fs%IG  (i,this%fs%cfg%jmin,k)
+                  this%fs%U   (i,j,k)=this%fs%U   (i,this%fs%cfg%jmin,k)
+                  !this%fs%V  (i,j,k)=min(this%fs%V(i,this%fs%cfg%jmin,k),0.0_WP)
+                  this%fs%V   (i,j,k)=this%fs%V   (i,this%fs%cfg%jmin,k)
+                  this%fs%W   (i,j,k)=this%fs%W   (i,this%fs%cfg%jmin,k)
+                  this%fs%VF  (i,j,k)=this%fs%VF  (i,this%fs%cfg%jmin,k)
+                  ! Also adjust interface data
+                  call setPlane(this%fs%PLIC(i,j,k),0,[0.0_WP,-1.0_WP,0.0_WP],-this%fs%cfg%y(j+1)+this%fs%dy*this%fs%VF(i,j,k))
+                  this%fs%BL(:,i,j,k)=[this%fs%cfg%xm(i),this%fs%cfg%ym(j),this%fs%cfg%zm(k)]
+                  this%fs%BG(:,i,j,k)=[this%fs%cfg%xm(i),this%fs%cfg%ym(j),this%fs%cfg%zm(k)]
+               end do
+            end do; end do
       end if
-      
+
       ! Apply UNclipped Neumann on primitive variables in z+
       if (.not.this%fs%cfg%zper.and.this%fs%cfg%kproc.eq.this%fs%cfg%npz) then
          do j=this%fs%cfg%jmino_,this%fs%cfg%jmaxo_; do i=this%fs%cfg%imino_,this%fs%cfg%imaxo_
-            ! Copy over from kmax to kmax+1 and above
-            do k=this%fs%cfg%kmax+1,this%fs%cfg%kmaxo
-               ! Copy primitive variables
-               this%fs%RHOL(i,j,k)=this%fs%RHOL(i,j,this%fs%cfg%kmax)
-               this%fs%PL  (i,j,k)=this%fs%PL  (i,j,this%fs%cfg%kmax)
-               this%fs%IL  (i,j,k)=this%fs%IL  (i,j,this%fs%cfg%kmax)
-               this%fs%RHOG(i,j,k)=this%fs%RHOG(i,j,this%fs%cfg%kmax)
-               this%fs%PG  (i,j,k)=this%fs%PG  (i,j,this%fs%cfg%kmax)
-               this%fs%IG  (i,j,k)=this%fs%IG  (i,j,this%fs%cfg%kmax)
-               this%fs%U   (i,j,k)=this%fs%U   (i,j,this%fs%cfg%kmax)
-               this%fs%V   (i,j,k)=this%fs%V   (i,j,this%fs%cfg%kmax)
-               !this%fs%W  (i,j,k)=max(this%fs%W(i,j,this%fs%cfg%kmax),0.0_WP)
-               this%fs%W   (i,j,k)=this%fs%W   (i,j,this%fs%cfg%kmax)
-               this%fs%VF  (i,j,k)=this%fs%VF  (i,j,this%fs%cfg%kmax)
-               ! Also adjust interface data
-               call setPlane(this%fs%PLIC(i,j,k),0,[0.0_WP,0.0_WP,+1.0_WP],this%fs%cfg%z(k)+this%fs%dz*this%fs%VF(i,j,k))
-               this%fs%BL(:,i,j,k)=[this%fs%cfg%xm(i),this%fs%cfg%ym(j),this%fs%cfg%zm(k)]
-               this%fs%BG(:,i,j,k)=[this%fs%cfg%xm(i),this%fs%cfg%ym(j),this%fs%cfg%zm(k)]
-            end do
-         end do; end do
+               ! Copy over from kmax to kmax+1 and above
+               do k=this%fs%cfg%kmax+1,this%fs%cfg%kmaxo
+                  ! Copy primitive variables
+                  this%fs%RHOL(i,j,k)=this%fs%RHOL(i,j,this%fs%cfg%kmax)
+                  this%fs%PL  (i,j,k)=this%fs%PL  (i,j,this%fs%cfg%kmax)
+                  this%fs%IL  (i,j,k)=this%fs%IL  (i,j,this%fs%cfg%kmax)
+                  this%fs%RHOG(i,j,k)=this%fs%RHOG(i,j,this%fs%cfg%kmax)
+                  this%fs%PG  (i,j,k)=this%fs%PG  (i,j,this%fs%cfg%kmax)
+                  this%fs%IG  (i,j,k)=this%fs%IG  (i,j,this%fs%cfg%kmax)
+                  this%fs%U   (i,j,k)=this%fs%U   (i,j,this%fs%cfg%kmax)
+                  this%fs%V   (i,j,k)=this%fs%V   (i,j,this%fs%cfg%kmax)
+                  !this%fs%W  (i,j,k)=max(this%fs%W(i,j,this%fs%cfg%kmax),0.0_WP)
+                  this%fs%W   (i,j,k)=this%fs%W   (i,j,this%fs%cfg%kmax)
+                  this%fs%VF  (i,j,k)=this%fs%VF  (i,j,this%fs%cfg%kmax)
+                  ! Also adjust interface data
+                  call setPlane(this%fs%PLIC(i,j,k),0,[0.0_WP,0.0_WP,+1.0_WP],this%fs%cfg%z(k)+this%fs%dz*this%fs%VF(i,j,k))
+                  this%fs%BL(:,i,j,k)=[this%fs%cfg%xm(i),this%fs%cfg%ym(j),this%fs%cfg%zm(k)]
+                  this%fs%BG(:,i,j,k)=[this%fs%cfg%xm(i),this%fs%cfg%ym(j),this%fs%cfg%zm(k)]
+               end do
+            end do; end do
       end if
-      
+
       ! Apply UNclipped Neumann on primitive variables in z-
       if (.not.this%fs%cfg%zper.and.this%fs%cfg%kproc.eq.1) then
          do j=this%fs%cfg%jmino_,this%fs%cfg%jmaxo_; do i=this%fs%cfg%imino_,this%fs%cfg%imaxo_
-            ! First copy over W from kmin+1 to kmin
-            this%fs%W(i,j,this%fs%cfg%kmin)=min(this%fs%W(i,j,this%fs%cfg%kmin+1),0.0_WP)
-            ! Then copy over from kmin to kmin-1 and below
-            do k=this%fs%cfg%kmino,this%fs%cfg%kmin-1
-               ! Copy primitive variables
-               this%fs%RHOL(i,j,k)=this%fs%RHOL(i,j,this%fs%cfg%kmin)
-               this%fs%PL  (i,j,k)=this%fs%PL  (i,j,this%fs%cfg%kmin)
-               this%fs%IL  (i,j,k)=this%fs%IL  (i,j,this%fs%cfg%kmin)
-               this%fs%RHOG(i,j,k)=this%fs%RHOG(i,j,this%fs%cfg%kmin)
-               this%fs%PG  (i,j,k)=this%fs%PG  (i,j,this%fs%cfg%kmin)
-               this%fs%IG  (i,j,k)=this%fs%IG  (i,j,this%fs%cfg%kmin)
-               this%fs%U   (i,j,k)=this%fs%U   (i,j,this%fs%cfg%kmin)
-               this%fs%V   (i,j,k)=this%fs%V   (i,j,this%fs%cfg%kmin)
-               !this%fs%W  (i,j,k)=min(this%fs%W(i,j,this%fs%cfg%kmin),0.0_WP)
-               this%fs%W   (i,j,k)=this%fs%W   (i,j,this%fs%cfg%kmin)
-               this%fs%VF  (i,j,k)=this%fs%VF  (i,j,this%fs%cfg%kmin)
-               ! Also adjust interface data
-               call setPlane(this%fs%PLIC(i,j,k),0,[0.0_WP,0.0_WP,-1.0_WP],-this%fs%cfg%z(k+1)+this%fs%dz*this%fs%VF(i,j,k))
-               this%fs%BL(:,i,j,k)=[this%fs%cfg%xm(i),this%fs%cfg%ym(j),this%fs%cfg%zm(k)]
-               this%fs%BG(:,i,j,k)=[this%fs%cfg%xm(i),this%fs%cfg%ym(j),this%fs%cfg%zm(k)]
-            end do
-         end do; end do
+               ! First copy over W from kmin+1 to kmin
+               this%fs%W(i,j,this%fs%cfg%kmin)=min(this%fs%W(i,j,this%fs%cfg%kmin+1),0.0_WP)
+               ! Then copy over from kmin to kmin-1 and below
+               do k=this%fs%cfg%kmino,this%fs%cfg%kmin-1
+                  ! Copy primitive variables
+                  this%fs%RHOL(i,j,k)=this%fs%RHOL(i,j,this%fs%cfg%kmin)
+                  this%fs%PL  (i,j,k)=this%fs%PL  (i,j,this%fs%cfg%kmin)
+                  this%fs%IL  (i,j,k)=this%fs%IL  (i,j,this%fs%cfg%kmin)
+                  this%fs%RHOG(i,j,k)=this%fs%RHOG(i,j,this%fs%cfg%kmin)
+                  this%fs%PG  (i,j,k)=this%fs%PG  (i,j,this%fs%cfg%kmin)
+                  this%fs%IG  (i,j,k)=this%fs%IG  (i,j,this%fs%cfg%kmin)
+                  this%fs%U   (i,j,k)=this%fs%U   (i,j,this%fs%cfg%kmin)
+                  this%fs%V   (i,j,k)=this%fs%V   (i,j,this%fs%cfg%kmin)
+                  !this%fs%W  (i,j,k)=min(this%fs%W(i,j,this%fs%cfg%kmin),0.0_WP)
+                  this%fs%W   (i,j,k)=this%fs%W   (i,j,this%fs%cfg%kmin)
+                  this%fs%VF  (i,j,k)=this%fs%VF  (i,j,this%fs%cfg%kmin)
+                  ! Also adjust interface data
+                  call setPlane(this%fs%PLIC(i,j,k),0,[0.0_WP,0.0_WP,-1.0_WP],-this%fs%cfg%z(k+1)+this%fs%dz*this%fs%VF(i,j,k))
+                  this%fs%BL(:,i,j,k)=[this%fs%cfg%xm(i),this%fs%cfg%ym(j),this%fs%cfg%zm(k)]
+                  this%fs%BG(:,i,j,k)=[this%fs%cfg%xm(i),this%fs%cfg%ym(j),this%fs%cfg%zm(k)]
+               end do
+            end do; end do
       end if
-      
+
       ! Initialize conserved variables
       this%fs%Q(:,:,:,1)=        this%fs%VF *this%fs%RHOL
       this%fs%Q(:,:,:,2)=(1.0_WP-this%fs%VF)*this%fs%RHOG
@@ -697,10 +697,10 @@ contains
       ! this%fs%Q(:,:,:,5)=(this%fs%Q(:,:,:,1)+this%fs%Q(:,:,:,2))*this%fs%U
       ! this%fs%Q(:,:,:,6)=(this%fs%Q(:,:,:,1)+this%fs%Q(:,:,:,2))*this%fs%V
       ! this%fs%Q(:,:,:,7)=(this%fs%Q(:,:,:,1)+this%fs%Q(:,:,:,2))*this%fs%W
-      
+
    end subroutine apply_bconds
-   
-   
+
+
    !> Finalize shockdrop problem
    subroutine finalize(this)
       implicit none
@@ -719,6 +719,6 @@ contains
       call this%consfile%finalize()
       call this%dropfile%finalize()
    end subroutine finalize
-   
-   
+
+
 end module shockdrop_class

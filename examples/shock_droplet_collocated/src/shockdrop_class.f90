@@ -694,9 +694,6 @@ contains
       this%fs%Q(:,:,:,3)= this%fs%Q(:,:,:,1)*this%fs%IL
       this%fs%Q(:,:,:,4)= this%fs%Q(:,:,:,2)*this%fs%IG
       call this%fs%get_momentum()
-      ! this%fs%Q(:,:,:,5)=(this%fs%Q(:,:,:,1)+this%fs%Q(:,:,:,2))*this%fs%U
-      ! this%fs%Q(:,:,:,6)=(this%fs%Q(:,:,:,1)+this%fs%Q(:,:,:,2))*this%fs%V
-      ! this%fs%Q(:,:,:,7)=(this%fs%Q(:,:,:,1)+this%fs%Q(:,:,:,2))*this%fs%W
 
    end subroutine apply_bconds
 

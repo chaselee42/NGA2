@@ -674,7 +674,11 @@ contains
 
          ! Increment time
          call fs%get_cfl(dt=time%dt,cfl=time%cfl)
-         call time%adjust_dt()
+         if (time%n.le.20) then
+            time%dt=1e-9_WP
+         else
+            call time%adjust_dt()
+         end if
          call time%increment()
 
          ! Remember old state

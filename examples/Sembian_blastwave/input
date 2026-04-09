@@ -1,0 +1,48 @@
+# AMR grid
+Base nx:   160
+Base ny:   48
+Base nz:   1
+Max level: 5
+
+# Regridding parameters
+Regrid nsteps: 10
+Tagging vorticity: 5
+Tagging rho ratio: 1.5
+
+# Mesh definition
+Lx : 0.250
+Ly : 0.074
+
+# Flow setup
+Cylinder diameter    : 0.022
+Cylinder location    : 0.187
+Shock location       : 0.028
+Mach number of shock : 2.4
+Pre-shock density    : 1.17
+Pre-shock pressure   : 1.01e5
+
+# High pressure region initialization (Sembian Physics of Fluids 2016)
+HP center location  : 0.002
+HP region thickness : 0.001
+HP density  : 580.7
+HP pressure : 5e7
+
+# Fluid properties
+Liquid density   : 1000
+Liquid viscosity : 9e-4
+Gas viscosity    : 1.27e-5
+Liquid thermal conductivity : 0
+Gas thermal conductivity    : 0
+Liquid gamma : 6.12
+Liquid Pinf  : 3.43e8
+Gas gamma    : 1.4
+
+# Time integration
+Max dt:   1e-8
+Max CFL:  0.5
+Max time: 4e-4
+
+# Output
+Output period:     1.0e-6
+Checkpoint period: 2.5e-5
+Restart from:      

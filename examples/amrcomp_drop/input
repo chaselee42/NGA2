@@ -1,7 +1,7 @@
 # AMR grid
 Base nx:   32
 Base ny:   32
-Base nz:   1
+Base nz:   32
 Max level: 6
 
 # Regridding parameters
@@ -36,5 +36,6 @@ Max time: 1e2
 
 # Output
 Output period:     1e-1
+Max wall time:     14400
 Checkpoint period: 1
 Restart from:      !restart/drop_1.00000E+01

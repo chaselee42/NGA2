@@ -517,7 +517,7 @@ contains
       handle_restart: block
          integer :: restart_step
          ! Initialize IO object
-         call io%initialize(amr=amr,nfiles=1)
+         call io%initialize(amr=amr,nfiles=128)
          ! Check if restarting
          call param_read('Restart from',restart_dir,default='')
          restarted=(len_trim(restart_dir).gt.0)

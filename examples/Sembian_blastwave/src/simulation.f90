@@ -40,9 +40,9 @@ module simulation
    !> Simulation monitoring
    type(monitor) :: mfile,consfile,cflfile,gridfile,tfile
 
-   !> Stiffened gas/NASG EOS parameters (liquid and gas)
-   real(WP) :: GammaL,PinfL,CvL,BL,QL
-   real(WP) :: GammaG,PinfG,CvG,BG,QG
+   !> Stiffened gas EOS parameters (liquid and gas)
+   real(WP) :: GammaL,PinfL,CvL
+   real(WP) :: GammaG,PinfG,CvG
 
    !> Flow parameters
    real(WP) :: Grho0,GP0          !< Pre-shock gas state
@@ -82,56 +82,6 @@ contains
       G=0.5_WP*dcyl-sqrt((xyz(1)-xcyl)**2+xyz(2)**2+xyz(3)**2)
       if (amr%nz.eq.1) G=0.5_WP*dcyl-sqrt((xyz(1)-xcyl)**2+xyz(2)**2) ! Enable quasi-2D runs
    end function levelset_cyl
-   
-   !> Liquid EOS: P=f(RHO,I) - Noble Abel Stiffened gas
-   !pure real(WP) function get_PL(RHO,I)
-   !   implicit none
-   !   real(WP), intent(in) :: RHO,I
-   !   get_PL=RHO*(I-QL)*(GammaL-1,0_WP)/(1.0_WP*RHO*BL)-GammaL*PinfL
-   !end function get_PL
-   !> Liquid EOS: T=f(RHO,P)
-   !pure real(WP) function get_TL(RHO,P,I)
-   !   implicit none
-   !   real(WP), intent(in) :: RHO,P,I
-   !   get_TL=(RHO*(I-QL)-(1.0_WP-RHO*BL)*PinfL)/(RHO*CvL)
-   !end function get_TL
-   !> Liquid EOS: C=f(RHO,P)
-   !pure real(WP) function get_CL(RHO,P)
-   !   implicit none
-   !   real(WP), intent(in) :: RHO,P
-   !   get_CL=sqrt(max(0.0_WP,GammaL*(P+PinfL)/((1.0_WP-RHO*BL)*RHO)))
-   !end function get_CL
-   !> Liquid EOS: I=f(RHO,P) (used for initialization)
-   !pure real(WP) function get_IL(RHO,P)
-   !   implicit none
-   !   real(WP), intent(in) :: RHO,P
-   !   get_IL=(P+GammaL*PinfL)*(1.0_WP-RHO*BL)/(RHO*(GammaL-1.0_WP))+QL
-   !end function get_IL
-
-   !> Gas EOS: P=f(RHO,I) - Ideal gas
-   !pure real(WP) function get_PG(RHO,I)
-   !   implicit none
-   !   real(WP), intent(in) :: RHO,I
-   !   get_PG=RHO*(I-QG)*(GammaG-1,0_WP)/(1.0_WP*RHO*BG)-GammaG*PinfG
-   !end function get_PG
-   !> Gas EOS: T=f(RHO,P)
-   !pure real(WP) function get_TG(RHO,P,I)
-   !   implicit none
-   !   real(WP), intent(in) :: RHO,P,I
-   !   get_TG=(RHO*(I-QG)-(1.0_WP-RHO*BG)*PinfG)/(RHO*CvG)
-   !end function get_TG
-   !> Gas EOS: C=f(RHO,P)
-   !pure real(WP) function get_CG(RHO,P)
-   !   implicit none
-   !   real(WP), intent(in) :: RHO,P
-   !   get_CG=sqrt(max(0.0_WP,GammaG*(P+PinfG)/((1.0_WP-RHO*BG)*RHO)))
-   !end function get_CG
-   !> Gas EOS: I=f(RHO,P) (used for initialization)
-   !pure real(WP) function get_IG(RHO,P)
-   !   implicit none
-   !   real(WP), intent(in) :: RHO,P
-   !   get_IG=(P+GammaG*PinfG)*(1.0_WP-RHO*BG)/(RHO*(GammaG-1.0_WP))+QG
-   !end function get_IG
 
    !> Liquid EOS: P=f(RHO,I) - Stiffened gas
    pure real(WP) function get_PL(RHO,I)
@@ -213,7 +163,7 @@ contains
       Pint=(ZG*PL+ZL*PG)/(ZG+ZL)
       ! Setup quadratic problem
       n1=VF*phist
-      n0=VF*(phi0*Pint-phist*cJ*pjump)+Q(3) 
+      n0=VF*(phi0*Pint-phist*cJ*pjump)+Q(3)
       d1=phist+1.0_WP/(GammaL-1.0_WP)
       d0=phi0*Pint-phist*cJ*pjump+GammaL/(GammaL-1.0_WP)*PinfL
       a=d1*(1.0_WP/(GammaG-1.0_WP)+phist*VF)+n1*(-1.0_WP/(GammaG-1.0_WP)-phist)
@@ -443,10 +393,10 @@ contains
                   ! Compute density ratio in 3x3x3 stencil and tag based on it
                   rho_max=solver%rho_floor; rho_min=huge(1.0_WP)
                   do kk=-1,1; do jj=-1,1; do ii=-1,1
-                     rho_nb=sum(pQ(i+ii,j+jj,k+kk,1:2))
-                     rho_max=max(rho_max,rho_nb)
-                     rho_min=min(rho_min,max(rho_nb,solver%rho_floor))
-                  end do; end do; end do
+                           rho_nb=sum(pQ(i+ii,j+jj,k+kk,1:2))
+                           rho_max=max(rho_max,rho_nb)
+                           rho_min=min(rho_min,max(rho_nb,solver%rho_floor))
+                        end do; end do; end do
                   rho_ratio=rho_max/rho_min
                   if (rho_ratio.gt.rho_ratio_tag) tagarr(i,j,k,1)=SETtag
                end do; end do; end do
@@ -566,9 +516,9 @@ contains
 
       ! Initialize compressible multiphase solver
       create_solver: block
-      use amrex_amr_module, only: amrex_bc_foextrap, amrex_bc_reflect_even, amrex_bc_reflect_odd
-      use amrmpcomp_class, only: BC_REFLECT
-      use amrdata_class,    only: interp_face_lin
+         use amrex_amr_module, only: amrex_bc_foextrap, amrex_bc_reflect_even, amrex_bc_reflect_odd
+         use amrmpcomp_class, only: BC_REFLECT
+         use amrdata_class,    only: interp_face_lin
          ! Create flow solver
          call fs%initialize(amr=amr,name='Sembian_blastwave')
          ! Set surface tension coefficient
@@ -865,7 +815,7 @@ contains
 
          ! Increment time
          call fs%get_cfl(dt=time%dt,cfl=time%cfl)
-         if (time%n.le.1000) then
+         if (.not.restarted.and.time%n.le.1000) then
             time%dt=1e-9_WP
          else
             call time%adjust_dt()
@@ -922,7 +872,7 @@ contains
          ! Get primitive variables
          call fs%get_primitive(Q=fs%Q)
          ! ======================================================================================
-         
+
          ! Regrid if event triggers
          if (regrid_evt%occurs()) then
             call amr%regrid(baselvl=0,time=time%t)

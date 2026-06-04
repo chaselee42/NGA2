@@ -34,7 +34,7 @@ module amrviz_class
       character(len=str_medium) :: name
       type(surfmesh), pointer :: ptr => null()
    end type srf
-   
+
    ! Base64 encoding table for VTP output
    character(len=64), parameter :: b64_table = &
       'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
@@ -130,6 +130,7 @@ contains
                end if
             end if
          end block centering_names
+
       end if
 
       ! Broadcast ntime and time array to all ranks
@@ -180,11 +181,16 @@ contains
 
    !> Register a surface mesh for output (VTP format)
    subroutine add_surfmesh(this, smesh, name)
+      use filesys, only: isfile
+      use string, only: str_long
+      use mpi_f08, only: MPI_BCAST, MPI_INTEGER
+      use parallel, only: MPI_REAL_WP
       implicit none
       class(amrviz), intent(inout) :: this
       type(surfmesh), target, intent(in) :: smesh
       character(len=*), intent(in) :: name
       type(srf), pointer :: new_srf
+      integer :: ierr
 
       ! Create new surface node
       allocate(new_srf)
@@ -194,6 +200,60 @@ contains
       ! Insert at front of list
       new_srf%next => this%first_srf
       this%first_srf => new_srf
+
+      ! Fallback: parse existing PVD file for timestamps if this is a surface-mesh-only viz
+      if (this%ntime.eq.0) then
+         scan_pvd: block
+            character(len=str_long) :: pvd_name, line, dirname
+            integer :: iunit, ios, nentries, tstart, tend, n
+            real(WP) :: tval
+            dirname = 'amrviz/'//trim(this%name)
+            write(pvd_name,'(a,"/",a,".pvd")') trim(dirname), trim(new_srf%name)
+            if (this%amr%amRoot .and. isfile(trim(pvd_name))) then
+               ! First pass: count entries
+               nentries = 0
+               open(newunit=iunit, file=trim(pvd_name), status='old', action='read', iostat=ios)
+               if (ios.eq.0) then
+                  do
+                     read(iunit,'(a)', iostat=ios) line
+                     if (ios.ne.0) exit
+                     if (index(line,'timestep=').gt.0) nentries = nentries + 1
+                  end do
+                  close(iunit)
+               end if
+               ! Second pass: read timestamps
+               if (nentries.gt.0) then
+                  this%ntime = nentries
+                  if (.not.allocated(this%time)) allocate(this%time(this%ntime))
+                  n = 0
+                  open(newunit=iunit, file=trim(pvd_name), status='old', action='read', iostat=ios)
+                  do
+                     read(iunit,'(a)', iostat=ios) line
+                     if (ios.ne.0) exit
+                     tstart = index(line,'timestep="')
+                     if (tstart.gt.0) then
+                        tstart = tstart + 10  ! Skip past 'timestep="'
+                        tend = index(line(tstart:),'"') + tstart - 2
+                        n = n + 1
+                        read(line(tstart:tend),*,iostat=ios) tval
+                        if (ios.eq.0) then
+                           this%time(n) = tval
+                        else
+                           this%time(n) = real(n, WP)
+                        end if
+                     end if
+                  end do
+                  close(iunit)
+               end if
+            end if
+            ! Broadcast ntime and time array to all ranks
+            call MPI_BCAST(this%ntime, 1, MPI_INTEGER, 0, this%amr%comm, ierr)
+            if (this%ntime .gt. 0) then
+               if (.not.this%amr%amRoot .and. .not.allocated(this%time)) allocate(this%time(this%ntime))
+               call MPI_BCAST(this%time, this%ntime, MPI_REAL_WP, 0, this%amr%comm, ierr)
+            end if
+         end block scan_pvd
+      end if
    end subroutine add_surfmesh
 
    !> Write all registered fields to HDF5 plotfiles
@@ -262,7 +322,7 @@ contains
          my_scl => my_scl%next
       end do
 
-      if (ngroups == 0) return  ! Nothing to write
+      if (ngroups == 0 .and. .not.associated(this%first_srf)) return  ! Nothing to write
 
       ! --- Time tracking (shared across all groups) ---
       if (this%ntime.eq.0) then
@@ -491,11 +551,11 @@ contains
       character(len=:), allocatable :: encoded
       integer :: i, j, nout, b1, b2, b3, idx
       integer :: npad
-      
+
       ! Calculate output length (4 chars per 3 bytes, rounded up)
       nout = ((nbytes + 2) / 3) * 4
       allocate(character(len=nout) :: encoded)
-      
+
       j = 1
       do i = 1, nbytes, 3
          ! Get up to 3 bytes (use 0 for padding)
@@ -510,28 +570,28 @@ contains
          else
             b3 = 0
          end if
-         
+
          ! Encode to 4 base64 characters
          idx = ishft(b1, -2) + 1
          encoded(j:j) = b64_table(idx:idx)
-         
+
          idx = ior(ishft(iand(b1, 3), 4), ishft(b2, -4)) + 1
          encoded(j+1:j+1) = b64_table(idx:idx)
-         
+
          idx = ior(ishft(iand(b2, 15), 2), ishft(b3, -6)) + 1
          encoded(j+2:j+2) = b64_table(idx:idx)
-         
+
          idx = iand(b3, 63) + 1
          encoded(j+3:j+3) = b64_table(idx:idx)
-         
+
          j = j + 4
       end do
-      
+
       ! Add padding
       npad = mod(3 - mod(nbytes, 3), 3)
       if (npad >= 1) encoded(nout:nout) = '='
       if (npad >= 2) encoded(nout-1:nout-1) = '='
-      
+
    end function encode_base64
 
 
@@ -541,7 +601,7 @@ contains
       class(amrviz), intent(in) :: this
       character(len=*), intent(in) :: srf_name
       type(surfmesh), intent(in) :: smesh
-      
+
       character(len=str_long) :: filename, dirname
       character(len=str_medium) :: basename
       character(len=:), allocatable :: b64_data
@@ -552,12 +612,12 @@ contains
       real(WP), dimension(:), allocatable :: pts_data
       integer(4), dimension(:), allocatable :: conn_data, off_data
       integer :: nPoly
-      
+
       ! Construct filename with timestep
       dirname = 'amrviz/'//trim(this%name)
       write(basename,'(A,"_",I6.6,".vtp")') trim(srf_name), this%ntime
       filename = trim(dirname)//'/'//trim(basename)
-      
+
       ! Root creates header
       if (this%amr%amRoot) then
          open(newunit=iunit, file=trim(filename), status='replace', action='write', iostat=ierr)
@@ -567,21 +627,21 @@ contains
          close(iunit)
       end if
       call MPI_BARRIER(this%amr%comm, ierr)
-      
+
       ! Each rank writes its data sequentially
       do irank = 0, this%amr%nproc - 1
          if (irank.eq.this%amr%rank) then
             open(newunit=iunit, file=trim(filename), status='old', position='append', action='write', iostat=ierr)
-            
+
             ! Write this rank's piece
             if (smesh%nPoly.gt.0 .and. smesh%nVert.gt.0) then
                write(iunit,'(a,i0,a,i0,a)') '    <Piece NumberOfPoints="', smesh%nVert, &
                   '" NumberOfPolys="', smesh%nPoly, '">'
-               
+
                ! === Points (base64 binary) ===
                write(iunit,'(a)') '      <Points>'
                write(iunit,'(a)', advance='no') '        <DataArray type="Float64" NumberOfComponents="3" format="binary">'
-               
+
                ! Pack points into byte buffer: [header(4 bytes)][data]
                npts_bytes = smesh%nVert * 3 * 8
                allocate(pts_data(smesh%nVert * 3))
@@ -597,13 +657,13 @@ contains
                b64_data = encode_base64(buffer, size(buffer))
                write(iunit,'(a)', advance='no') b64_data
                deallocate(buffer, pts_data, b64_data)
-               
+
                write(iunit,'(a)') '</DataArray>'
                write(iunit,'(a)') '      </Points>'
-               
+
                ! === Polys (connectivity + offsets) ===
                write(iunit,'(a)') '      <Polys>'
-               
+
                ! Connectivity
                write(iunit,'(a)', advance='no') '        <DataArray type="Int32" Name="connectivity" format="binary">'
                nconn_bytes = sum(smesh%polySize(1:smesh%nPoly)) * 4
@@ -623,7 +683,7 @@ contains
                write(iunit,'(a)', advance='no') b64_data
                deallocate(buffer, conn_data, b64_data)
                write(iunit,'(a)') '</DataArray>'
-               
+
                ! Offsets
                write(iunit,'(a)', advance='no') '        <DataArray type="Int32" Name="offsets" format="binary">'
                noff_bytes = smesh%nPoly * 4
@@ -641,9 +701,9 @@ contains
                write(iunit,'(a)', advance='no') b64_data
                deallocate(buffer, off_data, b64_data)
                write(iunit,'(a)') '</DataArray>'
-               
+
                write(iunit,'(a)') '      </Polys>'
-               
+
                ! === Cell data (per-polygon variables) ===
                if (smesh%nvar.gt.0 .and. allocated(smesh%var)) then
                   write(iunit,'(a)') '      <CellData>'
@@ -662,15 +722,15 @@ contains
                   end do
                   write(iunit,'(a)') '      </CellData>'
                end if
-               
+
                write(iunit,'(a)') '    </Piece>'
             end if
-            
+
             close(iunit)
          end if
          call MPI_BARRIER(this%amr%comm, ierr)
       end do
-      
+
       ! Check how many polygons were written
       nPoly=smesh%nPoly; call MPI_ALLREDUCE(MPI_IN_PLACE,nPoly,1,MPI_INTEGER,MPI_SUM,this%amr%comm,ierr)
 
@@ -686,10 +746,10 @@ contains
          close(iunit)
       end if
       call MPI_BARRIER(this%amr%comm, ierr)
-      
+
       ! Write PVD collection file
       call this%write_pvd(srf_name)
-      
+
    end subroutine write_vtp
 
 
@@ -701,31 +761,31 @@ contains
       character(len=str_long) :: filename,dirname
       character(len=str_medium) :: basename,time_str
       integer :: iunit, ierr, n
-      
+
       ! Only root writes PVD
       if (.not.this%amr%amRoot) return
-      
+
       dirname = 'amrviz/'//trim(this%name)
       filename = trim(dirname)//'/'//trim(srf_name)//'.pvd'
-      
+
       open(newunit=iunit, file=trim(filename), status='replace', action='write', iostat=ierr)
-      
+
       write(iunit,'(a)') '<?xml version="1.0"?>'
       write(iunit,'(a)') '<VTKFile type="Collection" version="1.0" byte_order="LittleEndian">'
       write(iunit,'(a)') '  <Collection>'
-      
+
       do n = 1, this%ntime
          write(basename,'(A,"_",I6.6,".vtp")') trim(srf_name), n
          write(time_str,'(g0.17)') this%time(n)
          write(iunit,'(a,a,a,a,a)') '    <DataSet timestep="', trim(adjustl(time_str)), &
             '" file="', trim(basename), '"/>'
       end do
-      
+
       write(iunit,'(a)') '  </Collection>'
       write(iunit,'(a)') '</VTKFile>'
-      
+
       close(iunit)
-      
+
    end subroutine write_pvd
 
 

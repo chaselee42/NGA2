@@ -26,8 +26,8 @@ module simulation
    type(amrdata) :: dQdt,Umag,Mach
 
    !> Visualization
-   type(event) :: viz_evt
-   type(amrviz) :: viz
+   type(event) :: viz_evt,plicviz_evt
+   type(amrviz) :: viz,plicviz
 
    ! Regrid parameters
    type(event) :: regrid_evt
@@ -750,12 +750,17 @@ contains
          call viz%add_scalar(fs%UVW,3,'W')
          call viz%add_scalar(Umag,1,'Umag')
          call viz%add_scalar(Mach,1,'Mach')
-         call viz%add_surfmesh(fs%smesh,'plic')
+         ! Create plic visualization object
+         call plicviz%initialize(amr,'plic',use_hdf5=.false.)
+         call plicviz%add_surfmesh(fs%smesh,'plic')
          ! Create visualization output event
          viz_evt=event(time=time,name='Visualization output')
+         plicviz_evt=event(time=time,name='PLIC Visualization output')
          call param_read('Output period',viz_evt%tper)
+         call param_read('PLIC Output period',plicviz_evt%tper)
          ! Write initial state
          if (viz_evt%occurs()) call viz%write(time=time%t)
+         if (plicviz_evt%occurs()) call plicviz%write(time=time%t)
       end block create_viz
 
       ! Create monitors
@@ -937,6 +942,7 @@ contains
 
          ! Visualization output
          if (viz_evt%occurs()) call viz%write(time=time%t)
+         if (plicviz_evt%occurs()) call plicviz%write(time=time%t)
 
          ! Checkpoint save
          if (save_evt%occurs()) then
@@ -982,6 +988,8 @@ contains
       ! Finalize visualization
       call viz%finalize()
       call viz_evt%finalize()
+      call plicviz%finalize()
+      call plicviz_evt%finalize()
       ! Finalize checkpoint
       call save_evt%finalize()
       call io%finalize()

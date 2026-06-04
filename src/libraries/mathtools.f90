@@ -2,7 +2,7 @@ module mathtools
    use precision, only: WP
    implicit none
    private
-   
+
    ! Make public what is useful outside
    public :: Pi,twoPi
    public :: fv_itp_build,fd_itp_build
@@ -15,22 +15,22 @@ module mathtools
    public :: eigensolve3
    public :: quadrature_rule
    public :: spherical_harmonic
-   
+
    ! Trigonometric parameters
    real(WP), parameter :: Pi   =3.1415926535897932385_WP
    real(WP), parameter :: twoPi=6.2831853071795864770_WP
-   
+
    ! Bessel first zero
    !real(WP), parameter :: bessj1_zero=3.8317059702075123115_WP
-   
+
    ! Blasius data points
    !real(WP), dimension(0:9) :: by0=[0.000000000000000_WP,0.165571818583440_WP,0.650024518764203_WP,1.39680822972500_WP,2.30574664618049_WP,3.28327391871370_WP,4.27962110517696_WP,5.27923901129384_WP,6.27921363832835_WP,7.27921257797747_WP]
    !real(WP), dimension(0:9) :: by1=[0.000000000000000_WP,0.329780063306651_WP,0.629765721178679_WP,0.84604458266019_WP,0.95551827831671_WP,0.99154183259084_WP,0.99897290050990_WP,0.9999216098795_WP,0.99999627301467_WP,0.99999989265063_WP]
    !real(WP), dimension(0:9) :: by2=[0.332057384255589_WP,0.323007152241930_WP,0.266751564401387_WP,0.161360240845588_WP,0.06423404047594_WP,0.01590689966410_WP,0.00240199722109_WP,0.00022016340923_WP,0.00001224984692_WP,0.00000041090325_WP]
-   
+
 contains
-   
-   
+
+
    !> Returns cross product in 3 dimensions: z=cross(x,y)
    pure function cross_product(x,y) result(z)
       implicit none
@@ -40,8 +40,8 @@ contains
       z(2)=x(3)*y(1)-x(1)*y(3)
       z(3)=x(1)*y(2)-x(2)*y(1)
    end function cross_product
-   
-   
+
+
    !> Finite volume interpolation metric builder
    subroutine fv_itp_build(n,x,xp,coeff)
       implicit none
@@ -71,8 +71,8 @@ contains
       ! Deallocate the work arrays
       deallocate(A,B)
    end subroutine fv_itp_build
-   
-   
+
+
    !> Finite difference interpolation metric builder
    subroutine fd_itp_build(n,x,xp,coeff)
       implicit none
@@ -97,8 +97,8 @@ contains
       ! Deallocate the work arrays
       deallocate(A,B)
    end subroutine fd_itp_build
-   
-   
+
+
    ! function inverse_matrix(A) result(Ainv)
    !    use messager, only: die
    !    implicit none
@@ -121,54 +121,54 @@ contains
    !    call DGETRI(n,Ainv,n,ipiv,work,n,info)
    !    if (info.ne.0) call die('[inverse_matrix] Matrix inversion failed')
    !  end function inverse_matrix
-   
-   
+
+
    !> Computes the inverse of a square matrix A
    function inverse_matrix(A) result(Ainv)
-     use messager,only:die
-     implicit none
-     real(WP),dimension(:,:),intent(in)::A
-     real(WP),dimension(size(A,1),size(A,2))::Ainv
-     real(WP),dimension(size(A,1),size(A,2))::A_
-     real(WP),dimension(size(A,2))::row_temp
-     integer::i,j,n,pivot
-     real(WP)::maxA,factor
-     n=size(A,1)
-     if (size(A,2).ne.n) call die('[inverse_matrix] Matrix is not square')
-     A_=A
-     Ainv=0.0_WP
-     do i=1,n
-        Ainv(i,i)=1.0_WP
-     end do
-     do i=1,n
-        pivot=i
-        maxA=abs(A_(i,i))
-        do j=i+1,n
-           if(abs(A_(j,i)).gt.maxA)then
-              maxA=abs(A_(j,i))
-              pivot=j
-           end if
-        end do
-        if (pivot.ne.i) then
-           row_temp=A_(i,:)
-           A_(i,:)=A_(pivot,:)
-           A_(pivot,:)=row_temp
-           row_temp=Ainv(i,:)
-           Ainv(i,:)=Ainv(pivot,:)
-           Ainv(pivot,:)=row_temp
-        end if
-        if (abs(A_(i,i)).lt.1.0e-12_WP) call die('[inverse_matrix] Matrix is numerically singular')
-        factor=A_(i,i)
-        A_(i,:)=A_(i,:)/factor
-        Ainv(i,:)=Ainv(i,:)/factor
-        do j=1,n
-           if (j.ne.i) then
-              factor=A_(j,i)
-              A_(j,:)=A_(j,:)-factor*A_(i,:)
-              Ainv(j,:)=Ainv(j,:)-factor*Ainv(i,:)
-           end if
-        end do
-     end do
+      use messager,only:die
+      implicit none
+      real(WP),dimension(:,:),intent(in)::A
+      real(WP),dimension(size(A,1),size(A,2))::Ainv
+      real(WP),dimension(size(A,1),size(A,2))::A_
+      real(WP),dimension(size(A,2))::row_temp
+      integer::i,j,n,pivot
+      real(WP)::maxA,factor
+      n=size(A,1)
+      if (size(A,2).ne.n) call die('[inverse_matrix] Matrix is not square')
+      A_=A
+      Ainv=0.0_WP
+      do i=1,n
+         Ainv(i,i)=1.0_WP
+      end do
+      do i=1,n
+         pivot=i
+         maxA=abs(A_(i,i))
+         do j=i+1,n
+            if(abs(A_(j,i)).gt.maxA)then
+               maxA=abs(A_(j,i))
+               pivot=j
+            end if
+         end do
+         if (pivot.ne.i) then
+            row_temp=A_(i,:)
+            A_(i,:)=A_(pivot,:)
+            A_(pivot,:)=row_temp
+            row_temp=Ainv(i,:)
+            Ainv(i,:)=Ainv(pivot,:)
+            Ainv(pivot,:)=row_temp
+         end if
+         if (abs(A_(i,i)).lt.1.0e-12_WP) call die('[inverse_matrix] Matrix is numerically singular')
+         factor=A_(i,i)
+         A_(i,:)=A_(i,:)/factor
+         Ainv(i,:)=Ainv(i,:)/factor
+         do j=1,n
+            if (j.ne.i) then
+               factor=A_(j,i)
+               A_(j,:)=A_(j,:)-factor*A_(i,:)
+               Ainv(j,:)=Ainv(j,:)-factor*Ainv(i,:)
+            end if
+         end do
+      end do
    end function inverse_matrix
 
 
@@ -222,8 +222,8 @@ contains
       if (present(info)) info=0
       x=x_
    end function symsolve
-   
-   
+
+
    ! Returns normalized vector: w=v/|v|
    pure function normalize(v) result(w)
       implicit none
@@ -231,8 +231,8 @@ contains
       real(WP), dimension(3)             :: w
       w=v/(norm2(v)+tiny(1.0_WP))
    end function normalize
-   
-   
+
+
    ! Rotates a vector v by a specified quaternion q: w=q*v*conj(q)
    pure function qrotate(v,q) result(w)
       implicit none
@@ -249,8 +249,8 @@ contains
       &     2.0_WP*(q(3)*q(4)+q(1)*q(2))        *v(2)+&
       &    (2.0_WP*(q(1)*q(1)+q(4)*q(4))-1.0_WP)*v(3)
    end function qrotate
-   
-   
+
+
    ! Safe arctan
    function arctan(dx,dy)
       implicit none
@@ -267,8 +267,8 @@ contains
          arctan = twoPi+arctan
       end if
    end function arctan
-   
-   
+
+
    !> Calculates the eigenvalues and normalized eigenvectors of a symmetric 3x3 matrix A using the QL algorithm
    !> with implicit shifts, preceded by a Householder reduction to real tridiagonal form.
    !> The function accesses only the diagonal and upper triangular parts of A
@@ -341,9 +341,9 @@ contains
             E(m)=0.0_WP
          end do
       end do outer
-      
+
    contains
-      
+
       !> Reduces a symmetric 3x3 matrix to real tridiagonal form by applying (unitary) Householder transformations:
       !>           [ D[1]  E[1]       ]
       !>   A = Q . [ E[1]  D[2]  E[2] ] . Q^T
@@ -399,10 +399,10 @@ contains
             E(2)=A(2,3)
          end if
       end subroutine householder
-   
+
    end subroutine eigensolve3
-   
-   
+
+
    !> Compute a nth order Clenshaw-Curtis quadrature rule on [0,1]
    !> int(f(x)) in [0,1] is approximated by sum(w_i*f(x_i)) for i=1..N
    subroutine quadrature_rule(n,x,w)
@@ -434,7 +434,7 @@ contains
                b=1.0_WP
             else
                b=2.0_WP
-            end if            
+            end if
             w(i)=w(i)-b*cos(2.0_WP*real(j,WP)*theta)/real(4*j*j-1,WP)
          end do
       end do
@@ -442,8 +442,8 @@ contains
       ! Rescale to be in [0,1]
       x=0.5_WP*(1.0_WP+x); w=0.5_WP*w
    end subroutine quadrature_rule
-   
-   
+
+
    !> Computes spherical harmonics Y_l^m(theta,phi) for a given l and m at angles theta and phi
    function spherical_harmonic(l,m,theta,phi) result(Ylm)
       implicit none
@@ -452,10 +452,16 @@ contains
       real(WP) :: Ylm
       real(WP) :: norm,plm
       integer  :: mm,abs_m
+      abs_m=abs(m)
+      ! Y_l^m is zero by definition when |m| > l
+      if (abs_m.gt.l) then
+         Ylm=0.0_WP
+         return
+      end if
       ! Associated Legendre polynomial
-      abs_m=abs(m); plm=legendre_p(l,abs_m,cos(theta))
-      ! Normalization factor
-      norm=sqrt((2.0_WP*l+1.0_WP)/(4.0_WP*Pi)*real(factorial(l-abs_m),WP)/real(factorial(l+abs_m),WP))
+      plm=legendre_p(l,abs_m,cos(theta))
+      ! Normalization factor (use log_gamma to avoid integer overflow for large l)
+      norm=sqrt((2.0_WP*l+1.0_WP)/(4.0_WP*Pi)*exp(log_gamma(real(l-abs_m+1,WP))-log_gamma(real(l+abs_m+1,WP))))
       ! Real-valued spherical harmonics
       if (m.gt.0) then
          Ylm=sqrt(2.0_WP)*norm*plm*cos(m*phi)
@@ -465,17 +471,6 @@ contains
          Ylm=norm*plm
       end if
    contains
-      !> Computes factorial of n
-      function factorial(n) result(fact)
-         integer, intent(in) :: n
-         integer :: fact,j
-         fact=1
-         if (n.gt.0) then
-            do j=2,n
-               fact=fact*j
-            end do
-         end if
-      end function factorial
       !> Computes the associated Legendre polynomial P_l0^m0(x)
       function legendre_p(l0,m0,x) result(p)
          implicit none
@@ -514,6 +509,6 @@ contains
          end if
       end function legendre_p
    end function spherical_harmonic
-   
-   
+
+
 end module mathtools

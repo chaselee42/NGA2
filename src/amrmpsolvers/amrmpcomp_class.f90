@@ -1,14 +1,15 @@
 !> AMR compressible multiphase solver class
 !> Inherits from amrmpflow_class
 module amrmpcomp_class
-   use iso_c_binding,    only: c_ptr,c_loc,c_f_pointer
-   use precision,        only: WP
-   use amrdata_class,    only: amrdata
-   use amrmpflow_class,  only: amrmpflow
-   use amrmg_class,      only: amrmg
-   use amrvof_class,     only: VFlo,VFhi,vol_eps,BC_LIQ,BC_GAS,BC_REFLECT,BC_USER
-   use amrex_amr_module, only: amrex_box,amrex_boxarray,amrex_distromap,amrex_mfiter
-   use material_class,   only: material
+   use iso_c_binding,     only: c_ptr,c_loc,c_f_pointer
+   use precision,         only: WP
+   use amrdata_class,     only: amrdata
+   use amrmpflow_class,   only: amrmpflow
+   use amrmg_class,       only: amrmg
+   use amrvof_class,      only: VFlo,VFhi,vol_eps,BC_LIQ,BC_GAS,BC_REFLECT,BC_USER
+   use amrex_amr_module,  only: amrex_box,amrex_boxarray,amrex_distromap,amrex_mfiter
+   use material_class,    only: material
+   use thermorelax_class, only: thermorelax
    implicit none
    private
 
@@ -32,8 +33,8 @@ module amrmpcomp_class
       integer :: Yl_lo=0,Yl_hi=-1        !< Liquid species range: Q(:,:,:, Yl_lo:Yl_hi)
       integer :: Yg_lo=0,Yg_hi=-1        !< Gas    species range: Q(:,:,:, Yg_lo:Yg_hi)
 
-      ! Pointer to subroutine for mixture cell relaxation
-      procedure(relax_iface), pointer, nopass :: relax=>null()
+      ! Thermodynamic relaxation model
+      class(thermorelax), pointer :: relax=>null()
 
       ! Pressure solver for pressure projection
       logical :: use_projection=.false.
@@ -176,16 +177,6 @@ module amrmpcomp_class
          type(amrex_box), intent(in) :: bx
          real(WP), dimension(:,:,:,:), contiguous, pointer :: pVF,pCL,pCG,pPLIC
       end subroutine mpcomp_vofbc_iface
-   end interface
-
-   !> Abstract interface for pressure relaxation callback
-   abstract interface
-      subroutine relax_iface(VF,Q,Pjump)
-         import :: WP
-         real(WP), intent(inout) :: VF
-         real(WP), dimension(:), intent(inout) :: Q
-         real(WP), intent(in) :: Pjump
-      end subroutine relax_iface
    end interface
 
 contains
@@ -1803,7 +1794,7 @@ contains
                         end if
                      end if
                   end if
-                  ! Divergence of conserved variable fluxes (7 components)
+                  ! Divergence of conserved variable fluxes (all components)
                   rhs(i,j,k,:)=dxi*(pFx(i+1,j,k,:)-pFx(i,j,k,:))+dyi*(pFy(i,j+1,k,:)-pFy(i,j,k,:))+dzi*(pFz(i,j,k+1,:)-pFz(i,j,k,:))
                   ! Velocity gradients at cell center
                   dUdx(1,1)=0.5_WP*dxi*(pUVW(i+1,j,k,1)-pUVW(i-1,j,k,1))
@@ -2229,11 +2220,12 @@ contains
    end subroutine clean_Q
 
    !> Apply relaxation to mixture cells
-   subroutine apply_relax(this,time)
+   subroutine apply_relax(this,dt,time)
       use mpi_f08, only: MPI_Wtime
       use amrvof_geometry, only: get_plane_dist,cut_hex_vol
       implicit none
       class(amrmpcomp), intent(inout) :: this
+      real(WP), intent(in) :: dt
       real(WP), intent(in) :: time
       integer :: lvl,i,j,k
       real(WP) :: t0
@@ -2271,7 +2263,7 @@ contains
             ! Check if mixture cell prior to relaxation
             oldmix=(pVF(i,j,k,1).ge.VFlo.and.pVF(i,j,k,1).le.VFhi)
             ! Apply user-provided relaxation model (modifies VF and Q)
-            call this%relax(VF=pVF(i,j,k,1),Q=pQ(i,j,k,:),Pjump=this%sigma*pCurv(i,j,k,1))
+            call this%relax%apply(dt=dt,VF=pVF(i,j,k,1),Q=pQ(i,j,k,:),Pjump=this%sigma*pCurv(i,j,k,1))
             ! Check if mixture cell after relaxation
             newmix=(pVF(i,j,k,1).ge.VFlo.and.pVF(i,j,k,1).le.VFhi)
 
@@ -2433,9 +2425,11 @@ contains
       type(amrex_mfiter) :: mfi
       type(amrex_box) :: bx
       integer :: lvl,i,j,k,ierr
-      real(WP), dimension(:,:,:,:), contiguous, pointer :: pQ,pUVW,pVisc,pBeta,pDiff,pVF,pPL,pPG,pC,pTL,pTG
-      real(WP) :: dxi,dyi,dzi,rho,viscmax,conv,pgrad
+      real(WP), dimension(:,:,:,:), contiguous, pointer :: pQ,pUVW,pVisc,pBeta,pDiff,pVF,pPL,pPG,pC,pTL,pTG,pRHOL,pRHOG,pYl,pYg
+      real(WP) :: dxi,dyi,dzi,rho,viscmax,conv,pgrad,cvL,cvG,alpha_heat
       real(WP) :: Pmix_ip,Pmix_im,Pmix_jp,Pmix_jm,Pmix_kp,Pmix_km
+      real(WP), dimension(this%liq%ns) :: yL
+      real(WP), dimension(this%gas%ns) :: yG
       ! Get convective CFL from parent
       call this%amrmpflow%get_cflc(dt=dt)
       ! Reset child CFLs
@@ -2463,15 +2457,32 @@ contains
             pC   =>this%C%mf(lvl)%dataptr(mfi)
             pTL  =>this%TL%mf(lvl)%dataptr(mfi)
             pTG  =>this%TG%mf(lvl)%dataptr(mfi)
+            pRHOL=>this%RHOL%mf(lvl)%dataptr(mfi)
+            pRHOG=>this%RHOG%mf(lvl)%dataptr(mfi)
+            if (this%liq%ns.gt.1) pYl=>this%Yl%mf(lvl)%dataptr(mfi)
+            if (this%gas%ns.gt.1) pYg=>this%Yg%mf(lvl)%dataptr(mfi)
             ! Loop over cells
             bx=mfi%tilebox()
             do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
                ! Get density
                rho=max(pQ(i,j,k,1)+pQ(i,j,k,2),this%rho_floor)
+               ! Heat-diffusion CFL: thermal diffusivity alpha=lambda/(rho*cv), phasic in pure cells (matches conduction flux)
+               alpha_heat=0.0_WP
+               if (pVF(i,j,k,1).gt.VFhi.and.pRHOL(i,j,k,1).gt.0.0_WP) then
+                  ! Pure liquid: alpha_L=lambda/(rhoL*cvL)
+                  if (this%liq%ns.gt.1) yL(1:this%liq%ns-1)=pYl(i,j,k,:)
+                  yL(this%liq%ns)=max(0.0_WP,1.0_WP-sum(yL(1:this%liq%ns-1)))
+                  cvL=this%liq%get_cv_from_rho_T(pRHOL(i,j,k,1),pTL(i,j,k,1),yL)
+                  alpha_heat=pDiff(i,j,k,1)/max(pRHOL(i,j,k,1)*cvL,tiny(1.0_WP))
+               else if (pVF(i,j,k,1).lt.VFlo.and.pRHOG(i,j,k,1).gt.0.0_WP) then
+                  ! Pure gas: alpha_G=lambda/(rhoG*cvG)
+                  if (this%gas%ns.gt.1) yG(1:this%gas%ns-1)=pYg(i,j,k,:)
+                  yG(this%gas%ns)=max(0.0_WP,1.0_WP-sum(yG(1:this%gas%ns-1)))
+                  cvG=this%gas%get_cv_from_rho_T(pRHOG(i,j,k,1),pTG(i,j,k,1),yG)
+                  alpha_heat=pDiff(i,j,k,1)/max(pRHOG(i,j,k,1)*cvG,tiny(1.0_WP))
+               end if
                ! Viscous CFL
-               viscmax=max(pVisc(i,j,k,1)/rho, &
-               &           pBeta(i,j,k,1)/rho, &
-               &           pDiff(i,j,k,1)*(pVF(i,j,k,1)*pTL(i,j,k,1)+(1.0_WP-pVF(i,j,k,1))*pTG(i,j,k,1))/max(pQ(i,j,k,3)+pQ(i,j,k,4),this%rho_floor))
+               viscmax=max(pVisc(i,j,k,1)/rho,pBeta(i,j,k,1)/rho,alpha_heat)
                if (this%amr%nx.gt.1) this%CFLv_x=max(this%CFLv_x,4.0_WP*viscmax*dt*dxi**2)
                if (this%amr%ny.gt.1) this%CFLv_y=max(this%CFLv_y,4.0_WP*viscmax*dt*dyi**2)
                if (this%amr%nz.gt.1) this%CFLv_z=max(this%CFLv_z,4.0_WP*viscmax*dt*dzi**2)

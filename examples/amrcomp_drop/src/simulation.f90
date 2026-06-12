@@ -10,9 +10,9 @@ module simulation
    use event_class,         only: event
    use monitor_class,       only: monitor
    use amrio_class,         only: amrio
-   use stiffened_gas_class, only: stiffened_gas
-   use ideal_gas_class,     only: ideal_gas
-   use relax_ig_sg_class,   only: relax_ig_sg
+   use nasg_class,        only: nasg
+   use igmix_class,       only: igmix
+   use relax_igmix_nasg_class, only: relax_igmix_nasg
    implicit none
    private
 
@@ -26,9 +26,9 @@ module simulation
    type(amrmpcomp), target :: fs
    type(amrdata) :: dQdt,Umag,Mach
 
-   !> Visualization
-   type(event) :: viz_evt
-   type(amrviz) :: viz
+  !> Visualization
+   type(event) :: viz_evt,plicviz_evt
+   type(amrviz) :: viz,plicviz
 
    ! Regrid parameters
    type(event) :: regrid_evt
@@ -41,14 +41,15 @@ module simulation
    real(WP) :: restart_time
 
    !> Simulation monitoring
-   type(monitor) :: mfile,consfile,cflfile,gridfile,tfile
+   type(monitor) :: mfile,consfile,cflfile,gridfile,tfile,vaporfile
 
    !> Materials
-   type(stiffened_gas), target :: water
-   type(ideal_gas),     target :: air
+   type(nasg),  target :: water
+   type(igmix), target :: gas
+   integer, parameter :: indV=1,indA=2 !< Gas species indices in the mixture (1=vapor, 2=air)
 
    !> Relaxation model
-   type(relax_ig_sg), target :: relax_model
+   type(relax_igmix_nasg), target :: relax_model
 
    !> Flow parameters
    real(WP) :: rhoG1,pG1,u1           !< Pre-shock gas state
@@ -69,14 +70,20 @@ module simulation
    !> Moving wall model
    type(amrdata), target :: IBw
    real(WP) :: Xw,Uw
-
    !> Sponge parameters
    real(WP) :: R_spg=3.0_WP
    real(WP) :: L_spg=1.0_WP
 
+   !> Spherical harmonics perturbation parameters
+   integer :: nsh_modes=0
+   integer , dimension(:), allocatable :: l_modes,m_modes
+   real(WP), dimension(:), allocatable :: amp_modes,phase_modes
+
    !> Tagging parameter
    real(WP) :: Re_tag=huge(1.0_WP)
    real(WP) :: Rho_tag=huge(1.0_WP)
+   real(WP) :: P_tag=huge(1.0_WP)
+   real(WP) :: Ducros_tag=huge(1.0_WP)
 
 contains
 
@@ -86,13 +93,29 @@ contains
       Hshock=1.0_WP/(1.0_WP+exp(-x/delta))
    end function Hshock
 
-   !> Levelset function for sphere (centered at origin)
+   !> Levelset function for drop (centered at x=x_drop)
    function sphere_levelset(xyz,t) result(G)
+      use mathtools, only: spherical_harmonic
       real(WP), dimension(3), intent(in) :: xyz
       real(WP), intent(in) :: t
-      real(WP) :: G
-      G=0.5_WP-sqrt(xyz(1)**2+xyz(2)**2+xyz(3)**2)
-      if (amr%nz.eq.1) G=0.5_WP-sqrt(xyz(1)**2+xyz(2)**2) ! Enable quasi-2D runs
+      real(WP) :: G,r,theta,phi,perturb
+      integer :: i
+      !G=0.5_WP-sqrt((xyz(1)-x_drop)**2+xyz(2)**2+xyz(3)**2)
+      r=sqrt((xyz(1)-x_drop)**2+xyz(2)**2+xyz(3)**2)
+      if (r.gt.1.0e-12_WP) then
+         theta= acos(xyz(3)/r)
+         phi  =atan2(xyz(2),xyz(1)-x_drop)
+      else
+         theta=0.0_WP
+         phi  =0.0_WP
+      end if
+      ! Compute perturbation
+      perturb=0.0_WP
+      do i=1,nsh_modes
+         perturb=perturb+amp_modes(i)*spherical_harmonic(l_modes(i),m_modes(i),theta,phi+phase_modes(i))
+      end do
+      G=0.5_WP+perturb-r
+      if (amr%nz.eq.1) G=0.5_WP-sqrt((xyz(1)-x_drop)**2+xyz(2)**2) ! Enable quasi-2D runs
    end function sphere_levelset
 
    !> Compute viscosity: Sutherland for gas, VF-weighted blend with liquid
@@ -138,9 +161,9 @@ contains
                      ! Zero bulk viscosity
                      pBeta(i,j,k,1)=0.0_WP
                      ! Gas heat diffusivity: k=Cv*Gamma*mu/Pr
-                     k_g=air%gamma*air%cv*mu_g/Prandtl
-                     ! Liquid heat diffusivity from ratio
-                     k_l=diff_ratio*air%gamma*air%cv/(Reynolds*Prandtl)
+                      k_g=gas%cp(indA)*mu_g/Prandtl
+               ! Liquid heat diffusivity from ratio
+               k_l=diff_ratio*gas%cp(indA)/(Reynolds*Prandtl)
                      ! Mixture diffusivity
                      !pDiff(i,j,k,1)=pVF(i,j,k,1)*k_l+(1.0_WP-pVF(i,j,k,1))*k_g ! Arithmetic averaging
                      pDiff(i,j,k,1)=1.0_WP/(pVF(i,j,k,1)/max(k_l,myeps)+(1.0_WP-pVF(i,j,k,1))/max(k_g,myeps)) ! Harmonic averaging
@@ -174,13 +197,15 @@ contains
       type(amrex_box) :: bx
       real(WP), dimension(:,:,:,:), contiguous, pointer :: pQ,pVF,pCL,pCG
       real(WP), dimension(3) :: BL,BG
-      real(WP) :: dx,dy,dz,myVF,IEL,x_cc,rhoG,pG,uG,H
+      real(WP) :: dx,dy,dz,myVF,IEL,x_cc,rhoG,pG,uG,H,yg(2)
       integer :: i,j,k
       integer, parameter :: nref=3
       ! Get mesh size
       dx=solver%amr%dx(lvl); dy=solver%amr%dy(lvl); dz=solver%amr%dz(lvl)
       ! Get internal energy of liquid
       IEL=water%get_e_from_p_rho(p=pL1,rho=rhoL1,y=[1.0_WP])
+      ! Pre-shock gas composition: pure air (no vapor)
+      yg(indV)=0.0_WP; yg(indA)=1.0_WP
       ! Use passed ba/dm since grid is being constructed
       call amrex_mfiter_build(mfi,ba,dm,tiling=.false.)
       do while (mfi%next())
@@ -215,10 +240,11 @@ contains
                   pQ(i,j,k,1)=(       myVF)*rhoL1
                   pQ(i,j,k,2)=(1.0_WP-myVF)*rhoG
                   pQ(i,j,k,3)=pQ(i,j,k,1)*IEL
-                  pQ(i,j,k,4)=pQ(i,j,k,2)*air%get_e_from_p_rho(p=pG,rho=rhoG,y=[1.0_WP])
+                  pQ(i,j,k,4)=pQ(i,j,k,2)*gas%get_e_from_p_rho(p=pG,rho=rhoG,y=yg)
                   pQ(i,j,k,5)=(pQ(i,j,k,1)+pQ(i,j,k,2))*uG
                   pQ(i,j,k,6)=0.0_WP
                   pQ(i,j,k,7)=0.0_WP
+                  pQ(i,j,k,solver%Yg_lo:solver%Yg_hi)=0.0_WP   ! vapor partial density (Yv=0)
                end do; end do; end do
       end do
       call amrex_mfiter_destroy(mfi)
@@ -235,6 +261,7 @@ contains
       character(len=1), intent(in) :: comp
       real(WP), dimension(:,:,:,:), contiguous, pointer :: p
       integer :: i,j,k
+      real(WP) :: yg(2)
       select case (face)
        case (1)  ! X-LOW: Dirichlet inflow with post-shock (gas only, no liquid)
          select case (comp)
@@ -247,11 +274,12 @@ contains
                      p(i,j,k,1)=0.0_WP
                   end do; end do; end do
           case ('Q')  ! Cell-centered Q=(rho2,rho2*u2,0,0,rho2*I2)
+            yg(indV)=0.0_WP; yg(indA)=1.0_WP 
             do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
                      p(i,j,k,1)=0.0_WP                  ! No liquid
                      p(i,j,k,2)=rhoG2                   ! Gas density
                      p(i,j,k,3)=0.0_WP                  ! No liquid energy
-                     p(i,j,k,4)=rhoG2*air%get_e_from_p_rho(p=pG2,rho=rhoG2,y=[1.0_WP]) ! Gas internal energy
+                     p(i,j,k,4)=rhoG2*gas%get_e_from_p_rho(p=pG2,rho=rhoG2,y=yg) ! Gas internal energy
                      p(i,j,k,5)=rhoG2*u2                ! X-momentum
                      p(i,j,k,6)=0.0_WP
                      p(i,j,k,7)=0.0_WP
@@ -294,11 +322,11 @@ contains
       call amrex_mfiter_destroy(mfi)
    end subroutine set_IBw
 
-   !> Tagger based on velocity and density laplacians
    subroutine my_tagger(solver,lvl,time,tags_ptr)
       use iso_c_binding,    only: c_ptr,c_char
       use amrex_amr_module, only: amrex_mfiter,amrex_box,amrex_tagboxarray
       use amrgrid_class,    only: SETtag
+      use amrtag,           only: lap_error,grd_error
       class(amrmpcomp), intent(inout) :: solver
       integer, intent(in) :: lvl
       real(WP), intent(in) :: time
@@ -307,16 +335,21 @@ contains
       type(amrex_mfiter) :: mfi
       type(amrex_box) :: bx
       character(kind=c_char), dimension(:,:,:,:), contiguous, pointer :: tagarr
-      real(WP), dimension(:,:,:,:), contiguous, pointer :: pQ
-      real(WP) :: dx,dy,dz,dxi2,dyi2,dzi2,delta,delta2
-      real(WP) ::  rho_cc, rho_xp, rho_xm, rho_yp, rho_ym, rho_zp, rho_zm
-      real(WP) :: irho_cc,irho_xp,irho_xm,irho_yp,irho_ym,irho_zp,irho_zm
-      real(WP) :: lapU,lapV,lapW,u_sgs,Re,lapRHO,avgRHO,r_cyl
+      real(WP), dimension(:,:,:,:), contiguous, pointer :: pQ,pPL,pVF,pUVW,pC
+      real(WP) :: dx,dy,dz,dxi,dyi,dzi,dxi2,dyi2,dzi2,delta,delta2
+      real(WP) :: rho_cc,rho_xp,rho_xm,rho_yp,rho_ym,rho_zp,rho_zm
+      real(WP) :: lapU,lapV,lapW,u_sgs,Re
+      real(WP) :: divu,vortx,vorty,vortz,vort,Ducros,Deps
+      real(WP) :: r_cyl
+      logical  :: in_zone
       integer :: i,j,k
+      real(WP), parameter :: Reps=1.0e-2_WP
+      real(WP), parameter :: Peps=1.0e-2_WP
+      real(WP), parameter :: Cduc=0.05_WP
       ! Get mesh size
-      dx=solver%amr%dx(lvl); dxi2=1.0_WP/dx**2
-      dy=solver%amr%dy(lvl); dyi2=1.0_WP/dy**2
-      dz=solver%amr%dz(lvl); dzi2=1.0_WP/dz**2
+      dx=solver%amr%dx(lvl); dxi=1.0_WP/dx; dxi2=1.0_WP/dx**2
+      dy=solver%amr%dy(lvl); dyi=1.0_WP/dy; dyi2=1.0_WP/dy**2
+      dz=solver%amr%dz(lvl); dzi=1.0_WP/dz; dzi2=1.0_WP/dz**2
       delta=solver%amr%min_meshsize(lvl); delta2=delta**2
       ! Recast tags
       tags=tags_ptr
@@ -325,35 +358,48 @@ contains
       do while (mfi%next())
          ! Get pointers to data
          tagarr=>tags%dataPtr(mfi)
-         pQ=>solver%Q%mf(lvl)%dataptr(mfi)
+         pQ  =>solver%Q%mf(lvl)%dataptr(mfi)
+         pPL =>solver%PL%mf(lvl)%dataptr(mfi)
+         pVF =>solver%VF%mf(lvl)%dataptr(mfi)
+         pUVW=>solver%UVW%mf(lvl)%dataptr(mfi)
+         pC  =>solver%C%mf(lvl)%dataptr(mfi)
          ! Loop over tile
          bx=mfi%tilebox()
          do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-                  ! First compute radial location to compare with sponge
-                  r_cyl=sqrt((solver%amr%ylo+(real(j,WP)+0.5_WP)*dy)**2+(solver%amr%zlo+(real(k,WP)+0.5_WP)*dz)**2)
-                  ! Get local densities and their inverse
-                  rho_cc=max(sum(pQ(i  ,j  ,k  ,1:2)),solver%rho_floor); irho_cc=1.0_WP/rho_cc
-                  rho_xp=max(sum(pQ(i+1,j  ,k  ,1:2)),solver%rho_floor); irho_xp=1.0_WP/rho_xp
-                  rho_xm=max(sum(pQ(i-1,j  ,k  ,1:2)),solver%rho_floor); irho_xm=1.0_WP/rho_xm
-                  rho_yp=max(sum(pQ(i  ,j+1,k  ,1:2)),solver%rho_floor); irho_yp=1.0_WP/rho_yp
-                  rho_ym=max(sum(pQ(i  ,j-1,k  ,1:2)),solver%rho_floor); irho_ym=1.0_WP/rho_ym
-                  rho_zp=max(sum(pQ(i  ,j  ,k+1,1:2)),solver%rho_floor); irho_zp=1.0_WP/rho_zp
-                  rho_zm=max(sum(pQ(i  ,j  ,k-1,1:2)),solver%rho_floor); irho_zm=1.0_WP/rho_zm
-                  ! Compute Laplacian of each velocity component
-                  lapU=(pQ(i+1,j,k,5)*irho_xp-2.0_WP*pQ(i,j,k,5)*irho_cc+pQ(i-1,j,k,5)*irho_xm)*dxi2+(pQ(i,j+1,k,5)*irho_yp-2.0_WP*pQ(i,j,k,5)*irho_cc+pQ(i,j-1,k,5)*irho_ym)*dyi2+(pQ(i,j,k+1,5)*irho_zp-2.0_WP*pQ(i,j,k,5)*irho_cc+pQ(i,j,k-1,5)*irho_zm)*dzi2
-                  lapV=(pQ(i+1,j,k,6)*irho_xp-2.0_WP*pQ(i,j,k,6)*irho_cc+pQ(i-1,j,k,6)*irho_xm)*dxi2+(pQ(i,j+1,k,6)*irho_yp-2.0_WP*pQ(i,j,k,6)*irho_cc+pQ(i,j-1,k,6)*irho_ym)*dyi2+(pQ(i,j,k+1,6)*irho_zp-2.0_WP*pQ(i,j,k,6)*irho_cc+pQ(i,j,k-1,6)*irho_zm)*dzi2
-                  lapW=(pQ(i+1,j,k,7)*irho_xp-2.0_WP*pQ(i,j,k,7)*irho_cc+pQ(i-1,j,k,7)*irho_xm)*dxi2+(pQ(i,j+1,k,7)*irho_yp-2.0_WP*pQ(i,j,k,7)*irho_cc+pQ(i,j-1,k,7)*irho_ym)*dyi2+(pQ(i,j,k+1,7)*irho_zp-2.0_WP*pQ(i,j,k,7)*irho_cc+pQ(i,j,k-1,7)*irho_zm)*dzi2
-                  ! Estimate sgs velocity from Laplacian
-                  u_sgs=0.2_WP*sqrt(lapU**2+lapV**2+lapW**2)*delta2
-                  ! Calculate cell Reynolds number and tag if too large
-                  Re=Reynolds*u_sgs*delta
-                  if (Re.gt.Re_tag.and.(r_cyl.lt.R_spg+L_spg.or.lvl.lt.solver%amr%maxlvl-1)) tagarr(i,j,k,1)=SETtag
-                  ! Compute normalized Laplacian of mixture density and tag if too large
-                  lapRHO=(rho_xp-2.0_WP*rho_cc+rho_xm)*dxi2+(rho_yp-2.0_WP*rho_cc+rho_ym)*dyi2+(rho_zp-2.0_WP*rho_cc+rho_zm)*dzi2
-                  avgRHO=(rho_cc+rho_xp+rho_xm+rho_yp+rho_ym+rho_zp+rho_zm)/7.0_WP
-                  lapRHO=abs(lapRHO)*delta2/avgRHO
-                  if (lapRHO.gt.Rho_tag.and.(r_cyl.lt.R_spg+L_spg.or.lvl.lt.solver%amr%maxlvl-1)) tagarr(i,j,k,1)=SETtag
-               end do; end do; end do
+            ! Refinement zone: away from sponge unless below maxlvl-1
+            r_cyl=sqrt((solver%amr%ylo+(real(j,WP)+0.5_WP)*dy)**2+(solver%amr%zlo+(real(k,WP)+0.5_WP)*dz)**2)
+            in_zone=(r_cyl.lt.R_spg+L_spg.or.lvl.lt.solver%amr%maxlvl-1)
+
+            ! Mixture density laplacian error
+            rho_cc=sum(pQ(i  ,j,  k,  1:2))
+            rho_xp=sum(pQ(i+1,j,  k,  1:2)); rho_xm=sum(pQ(i-1,j,  k,  1:2))
+            rho_yp=sum(pQ(i,  j+1,k,  1:2)); rho_ym=sum(pQ(i,  j-1,k,  1:2))
+            rho_zp=sum(pQ(i,  j,  k+1,1:2)); rho_zm=sum(pQ(i,  j,  k-1,1:2))
+            if (lap_error(rho_cc,rho_xm,rho_xp,rho_ym,rho_yp,rho_zm,rho_zp,Reps).gt.Rho_tag.and.in_zone) tagarr(i,j,k,1)=SETtag
+
+            ! Liquid pressure gradient
+            if (pVF(i,j,k,1).gt.0.0_WP) then
+               if (grd_error(pPL(i,j,k,1),pPL(i-1,j,k,1),pPL(i+1,j,k,1),pPL(i,j-1,k,1),pPL(i,j+1,k,1),pPL(i,j,k-1,1),pPL(i,j,k+1,1),Peps).gt.P_tag.and.in_zone) tagarr(i,j,k,1)=SETtag
+            end if
+
+            ! SGS cell Reynolds number
+            lapU=(pUVW(i+1,j,k,1)-2.0_WP*pUVW(i,j,k,1)+pUVW(i-1,j,k,1))*dxi2+(pUVW(i,j+1,k,1)-2.0_WP*pUVW(i,j,k,1)+pUVW(i,j-1,k,1))*dyi2+(pUVW(i,j,k+1,1)-2.0_WP*pUVW(i,j,k,1)+pUVW(i,j,k-1,1))*dzi2
+            lapV=(pUVW(i+1,j,k,2)-2.0_WP*pUVW(i,j,k,2)+pUVW(i-1,j,k,2))*dxi2+(pUVW(i,j+1,k,2)-2.0_WP*pUVW(i,j,k,2)+pUVW(i,j-1,k,2))*dyi2+(pUVW(i,j,k+1,2)-2.0_WP*pUVW(i,j,k,2)+pUVW(i,j,k-1,2))*dzi2
+            lapW=(pUVW(i+1,j,k,3)-2.0_WP*pUVW(i,j,k,3)+pUVW(i-1,j,k,3))*dxi2+(pUVW(i,j+1,k,3)-2.0_WP*pUVW(i,j,k,3)+pUVW(i,j-1,k,3))*dyi2+(pUVW(i,j,k+1,3)-2.0_WP*pUVW(i,j,k,3)+pUVW(i,j,k-1,3))*dzi2
+            u_sgs=0.2_WP*sqrt(lapU**2+lapV**2+lapW**2)*delta2
+            Re=Reynolds*u_sgs*delta
+            if (Re.gt.Re_tag.and.in_zone) tagarr(i,j,k,1)=SETtag
+
+            ! Ducros compression switch
+            divu =0.5_WP*dxi*(pUVW(i+1,j,k,1)-pUVW(i-1,j,k,1))+0.5_WP*dyi*(pUVW(i,j+1,k,2)-pUVW(i,j-1,k,2))+0.5_WP*dzi*(pUVW(i,j,k+1,3)-pUVW(i,j,k-1,3))
+            vortx=0.5_WP*dyi*(pUVW(i,j+1,k,3)-pUVW(i,j-1,k,3))-0.5_WP*dzi*(pUVW(i,j,k+1,2)-pUVW(i,j,k-1,2))
+            vorty=0.5_WP*dzi*(pUVW(i,j,k+1,1)-pUVW(i,j,k-1,1))-0.5_WP*dxi*(pUVW(i+1,j,k,3)-pUVW(i-1,j,k,3))
+            vortz=0.5_WP*dxi*(pUVW(i+1,j,k,2)-pUVW(i-1,j,k,2))-0.5_WP*dyi*(pUVW(i,j+1,k,1)-pUVW(i,j-1,k,1))
+            vort=sqrt(vortx**2+vorty**2+vortz**2)
+            Deps=(Cduc*pC(i,j,k,1)/delta)**2
+            Ducros=divu**2/max(divu**2+vort**2+Deps,tiny(1.0_WP))
+            if (divu.lt.0.0_WP.and.Ducros.gt.Ducros_tag.and.in_zone) tagarr(i,j,k,1)=SETtag
+         end do; end do; end do
       end do
       call solver%amr%mfiter_destroy(mfi)
    end subroutine my_tagger
@@ -394,7 +440,8 @@ contains
          use string,   only: str_long
          character(len=str_long) :: message
          real(WP) :: A,B,C
-         real(WP) :: GammaL,PinfL,CvL
+         real(WP) :: GammaL,PinfL,bL,CvL,qpL
+         real(WP) :: GammaV,cvV,qV,qpV
          real(WP) :: GammaG,CvG
          real(WP) :: T_G
          ! Gas EoS parameters (ideal gas)
@@ -426,19 +473,41 @@ contains
          CvG=pG2/(rhoG2*(GammaG-1.0_WP))
          ! Surface tension
          call param_read('Weber number',Weber)
-         ! Liquid state from density ratio and liquid Mach number
-         call param_read('Density ratio',density_ratio)
-         call param_read('Liquid Mach number',ML)
-         rhoL1=density_ratio
-         pL1=pG1+4.0_WP/Weber                   ! Force pressure equilibrium, accounting for 3D Laplace pressure
-         if (amr%nz.eq.1) pL1=pG1+2.0_WP/Weber  ! Force pressure equilibrium, accounting for 2D Laplace pressure
-         PinfL=rhoL1/(GammaL*ML**2)-pL1
+         ! Liquid EoS, fit to this case's reference parameters
+         call param_read('Liquid pinf',PinfL)
+         call param_read('Liquid covolume',bL)
+         call param_read('Liquid cv',CvL)
+         call param_read('Liquid qp',qpL)
          ! Pre-shock gas temperature (ideal gas, T = p/((gamma-1)*Cv*rho))
          T_G=pG1/(rhoG1*(GammaG-1.0_WP)*CvG)
-         CvL=(pL1+PinfL)/(rhoL1*(GammaL-1.0_WP)*T_G) ! Force thermal equilibrium
-         ! Build materials
-         call air%initialize  (gamma=GammaG,cv=CvG,q=0.0_WP,qp=0.0_WP,name='air')
-         call water%initialize(gamma=GammaL,pinf=PinfL,cv=CvL,q=0.0_WP,qp=0.0_WP,name='water')
+         ! Pressure equilibrium (Laplace jump): liquid pressure = gas + surface tension
+         pL1=pG1+4.0_WP/Weber                   ! 3D Laplace pressure
+         if (amr%nz.eq.1) pL1=pG1+2.0_WP/Weber  ! 2D Laplace pressure
+         ! Liquid density from the NASG EOS at thermal+pressure equilibrium (T_L=T_G, p=pL1) [Option A]
+         rhoL1=(pL1+PinfL)/((GammaL-1.0_WP)*CvL*T_G+bL*(pL1+PinfL))
+         density_ratio=rhoL1/rhoG1                                        ! diagnostic (was an input under SG)
+         ML=1.0_WP/sqrt(GammaL*(pL1+PinfL)/(rhoL1*(1.0_WP-bL*rhoL1)))     ! diagnostic liquid Mach (Deltau=1)
+         ! Vapor EoS (NASG-fit vapor species; matters for phase change, inert at Yv=0)
+         call param_read('GammaV',GammaV)
+         call param_read('Vapor cv',cvV)
+         call param_read('Vapor q',qV)
+         call param_read('Vapor qp',qpV)
+         ! Build materials: gas = [vapor, air] ideal-gas mixture (indV=1, indA=2)
+         call gas%initialize(gamma=[GammaV,GammaG],cv=[cvV,CvG],q=[qV,0.0_WP],qp=[qpV,0.0_WP],species_names=[character(len=5)::'vapor','air'],name='gas')
+         call water%initialize(gamma=GammaL,pinf=PinfL,b=bL,cv=CvL,q=0.0_WP,qp=qpL,name='water')
+         ! ! Liquid state from density ratio and liquid Mach number
+         ! call param_read('Density ratio',density_ratio)
+         ! call param_read('Liquid Mach number',ML)
+         ! rhoL1=density_ratio
+         ! pL1=pG1+4.0_WP/Weber                   ! Force pressure equilibrium, accounting for 3D Laplace pressure
+         ! if (amr%nz.eq.1) pL1=pG1+2.0_WP/Weber  ! Force pressure equilibrium, accounting for 2D Laplace pressure
+         ! PinfL=rhoL1/(GammaL*ML**2)-pL1
+         ! ! Pre-shock gas temperature (ideal gas, T = p/((gamma-1)*Cv*rho))
+         ! T_G=pG1/(rhoG1*(GammaG-1.0_WP)*CvG)
+         ! CvL=(pL1+PinfL)/(rhoL1*(GammaL-1.0_WP)*T_G) ! Force thermal equilibrium
+         ! ! Build materials
+         ! call gas%initialize  (gamma=GammaG,cv=CvG,q=0.0_WP,qp=0.0_WP,name='air')
+         ! call water%initialize(gamma=GammaL,pinf=PinfL,cv=CvL,q=0.0_WP,qp=0.0_WP,name='water')
          ! Viscous parameters
          call param_read('Reynolds number',Reynolds)
          call param_read('Prandtl number',Prandtl)
@@ -452,10 +521,58 @@ contains
          write(message,'("[Pre-shock]  rhoG1=",es12.5," pG1=",es12.5)') rhoG1,pG1; call log(message)
          write(message,'("[Post-shock] rhoG2=",es12.5," pG2=",es12.5)') rhoG2,pG2; call log(message)
          write(message,'("[Liquid] rhoL1=",es12.5," pL1=",es12.5," ML=",es12.5)') rhoL1,pL1,ML; call log(message)
-         call water%print(); call air%print()
+         write(message,'("[Temp]   TL=",es12.5," TG=",es12.5)') water%get_T_from_p_rho(p=pL1,rho=rhoL1,y=[1.0_WP]),T_G; call log(message)
+         call water%print(); call gas%print()
          write(message,'("[Visc]   Re=",es12.5," mu*=",es12.5," Suth_n=",es12.5," Suth_T=",es12.5)') Reynolds,visc_ratio,Suth_n,Suth_T; call log(message)
          write(message,'("[Surface tension] We=",es12.5)') Weber; call log(message)
       end block init_eos_and_flow
+
+      initialize_sph_modes: block
+         use param,     only: param_read,param_exists
+         use parallel,  only: amRoot,MPI_REAL_WP,comm
+         use string,    only: str_long
+         use messager,  only: log
+         use mpi_f08,   only: MPI_BCAST,MPI_INTEGER
+         use random,    only: random_initialize,random_uniform
+         use mathtools, only: twoPi
+         character(str_long) :: message
+         integer  :: i,ierr
+         real(WP) :: r
+         ! Read number of modes (or set default)
+         call param_read('SphHarm Nmode',nsh_modes,default=0)
+         if (nsh_modes.gt.0) then
+            allocate(l_modes(nsh_modes),m_modes(nsh_modes),amp_modes(nsh_modes),phase_modes(nsh_modes))
+            if (param_exists('SphHarm l'))     call param_read('SphHarm l',    l_modes)
+            if (param_exists('SphHarm m'))     call param_read('SphHarm m',    m_modes)
+            if (param_exists('SphHarm amp'))   call param_read('SphHarm amp',  amp_modes)
+            if (param_exists('SphHarm phase')) call param_read('SphHarm phase',phase_modes)
+         else
+            ! Generate random modes if not provided
+            nsh_modes=8
+            allocate(l_modes(nsh_modes),m_modes(nsh_modes),amp_modes(nsh_modes),phase_modes(nsh_modes))
+            if (amRoot) then
+               call random_initialize()
+               do i=1,nsh_modes
+                  l_modes    (i)=1+i
+                  m_modes    (i)=i-nsh_modes/2
+                  amp_modes  (i)=4.0e-3_WP
+                  phase_modes(i)=random_uniform(lo=0.0_WP,hi=twoPi)
+               end do
+            end if
+            call MPI_BCAST(l_modes    ,nsh_modes,MPI_INTEGER,0,comm,ierr)
+            call MPI_BCAST(m_modes    ,nsh_modes,MPI_INTEGER,0,comm,ierr)
+            call MPI_BCAST(amp_modes  ,nsh_modes,MPI_REAL_WP,0,comm,ierr)
+            call MPI_BCAST(phase_modes,nsh_modes,MPI_REAL_WP,0,comm,ierr)
+         end if
+         ! Log the selected modes
+         if (amRoot) then
+            write(message,'("[SphHarm] Nmode  =",i6)')         nsh_modes; call log(message)
+            write(message,'("[SphHarm] l      =",1000(i4,x))') l_modes  ; call log(message)
+            write(message,'("[SphHarm] m      =",1000(i4,x))') m_modes  ; call log(message)
+            write(message,'("[SphHarm] amp    =",1000(es12.5,x))') amp_modes  ; call log(message)
+            write(message,'("[SphHarm] phase  =",1000(es12.5,x))') phase_modes; call log(message)
+         end if
+      end block initialize_sph_modes
 
       ! Handle restart/saves here
       handle_restart: block
@@ -489,13 +606,16 @@ contains
          use amrmpcomp_class,  only: BC_GAS
          use amrdata_class,    only: interp_face_lin
          ! Assign materials and create flow solver
-         fs%liq=>water; fs%gas=>air; call fs%initialize(amr=amr,name='drop')
+         fs%liq=>water; fs%gas=>gas; call fs%initialize(amr=amr,name='drop')
          ! Set surface tension coefficient
          fs%sigma=1.0_WP/Weber
          ! Use face-linear interp if 2D (divfree requires ratio=2 in all dirs)
          if (amr%nz.eq.1) fs%interp_vel=interp_face_lin
-         ! Wire pressure relaxation model
-         call relax_model%initialize(gas=air,liq=water); fs%relax=>relax_model
+         ! Provide pressure relaxation model
+         call relax_model%initialize(liq=water,gas=gas,indV=indV,indA=indA); fs%relax=>relax_model
+         relax_model%pv_dry     =1.0e-7_WP   ! nondim vapor-pressure floor for dry-edge reseed (~1 Pa / p_ref)
+         relax_model%do_nucleate=.false.     ! defer cavitation/condensation nucleation (first g-relax pass)
+         relax_model%model=3 ! 1=Prelax (mechanical only); 2=pT; 3=pTg (phase change)
          ! Set initial conditions
          fs%user_init=>shockdrop_init
          ! Set BCs
@@ -521,9 +641,9 @@ contains
       ! Initialize workspaces
       create_workspace: block
          use amrdata_class, only: interp_none
-         call dQdt%initialize(amr,name='dQdt',ncomp=7,ng=0,interp=interp_none); call dQdt%register()
-         call Umag%initialize(amr,name='Umag',ncomp=1,ng=0,interp=interp_none); call Umag%register()
-         call Mach%initialize(amr,name='Mach',ncomp=1,ng=0,interp=interp_none); call Mach%register()
+         call dQdt%initialize(amr,name='dQdt',ncomp=fs%nQ,ng=0,interp=interp_none); call dQdt%register()
+         call Umag%initialize(amr,name='Umag',ncomp=1    ,ng=0,interp=interp_none); call Umag%register()
+         call Mach%initialize(amr,name='Mach',ncomp=1    ,ng=0,interp=interp_none); call Mach%register()
       end block create_workspace
 
       ! Initialize regridding
@@ -535,8 +655,12 @@ contains
          call param_read('Regrid nsteps',regrid_evt%nper)
          ! Set case-specific tagging
          fs%user_tagging=>my_tagger
-         call param_read('Tagging Re',Re_tag)
-         call param_read('Tagging Rho',Rho_tag)
+         ! call param_read('Tagging Re',Re_tag)
+         ! call param_read('Tagging Rho',Rho_tag)
+         call param_read('Tag Reynolds value',Re_tag)
+         call param_read('Tag density error' ,Rho_tag)
+         call param_read('Tag pressure error',P_tag)
+         call param_read('Tag Ducros value',Ducros_tag)
          ! Build the grid
          if (restarted) then
             ! Restore grid hierarchy from checkpoint
@@ -585,17 +709,24 @@ contains
          call viz%add_scalar(fs%RHOG,1,'RHOG')
          call viz%add_scalar(fs%PL,1,'PL')
          call viz%add_scalar(fs%PG,1,'PG')
+         call viz%add_scalar(fs%TL,1,'TL')
+         call viz%add_scalar(fs%TG,1,'TG')
          call viz%add_scalar(fs%UVW,1,'U')
          call viz%add_scalar(fs%UVW,2,'V')
          call viz%add_scalar(fs%UVW,3,'W')
          call viz%add_scalar(Umag,1,'Umag')
          call viz%add_scalar(Mach,1,'Mach')
-         call viz%add_surfmesh(fs%smesh,'plic')
+         ! Create plic visualization object
+         call plicviz%initialize(amr,'plic',use_hdf5=.false.)
+         call plicviz%add_surfmesh(fs%smesh,'plic')
          ! Create visualization output event
          viz_evt=event(time=time,name='Visualization output')
+         plicviz_evt=event(time=time,name='PLIC Visualization output')
          call param_read('Output period',viz_evt%tper)
+         call param_read('PLIC Output period',plicviz_evt%tper)
          ! Write initial state
          if (viz_evt%occurs()) call viz%write(time=time%t)
+         if (plicviz_evt%occurs()) call plicviz%write(time=time%t)
       end block create_viz
 
       ! Create monitors
@@ -616,6 +747,8 @@ contains
          call mfile%add_column(fs%RHOLmax,'rhoLmax')
          call mfile%add_column(fs%PLmin,'PLmin')
          call mfile%add_column(fs%PLmax,'PLmax')
+         call mfile%add_column(fs%TLmin,'TLmin')
+         call mfile%add_column(fs%TLmax,'TLmax')
          call mfile%add_column(fs%RHOGmin,'rhoGmin')
          call mfile%add_column(fs%RHOGmax,'rhoGmax')
          call mfile%add_column(fs%PGmin,'PGmin')
@@ -645,6 +778,7 @@ contains
          consfile=monitor(amRoot=amr%amRoot,name='conservation')
          call consfile%add_column(time%n,'Timestep number')
          call consfile%add_column(time%t,'Time')
+         call consfile%add_column(fs%VFint,'VFint')
          call consfile%add_column(fs%Qint(1),'Liquid Mass')
          call consfile%add_column(fs%Qint(2),'Gas Mass')
          call consfile%add_column(fs%Qint(3),'Liquid IntEnergy')
@@ -653,7 +787,16 @@ contains
          call consfile%add_column(fs%Qint(6),'V Momentum')
          call consfile%add_column(fs%Qint(7),'W Momentum')
          call consfile%add_column(fs%rhoKint,'Kinetic energy')
+         call consfile%add_column(fs%Qint(fs%Yg_lo),'Vapor Mass')
          call consfile%write()
+         ! Create vapor monitor: total vapor mass (integral) + vapor mass-fraction extremes
+         vaporfile=monitor(amRoot=amr%amRoot,name='vapor')
+         call vaporfile%add_column(time%n,'Timestep number')
+         call vaporfile%add_column(time%t,'Time')
+         call vaporfile%add_column(fs%Qint(fs%Yg_lo),'Vapor mass')
+         call vaporfile%add_column(fs%Ygmin(1),'Yv min')
+         call vaporfile%add_column(fs%Ygmax(1),'Yv max')
+         call vaporfile%write()
          ! Create grid monitor
          gridfile=monitor(amRoot=amr%amRoot,name='grid')
          call gridfile%add_column(time%n,'Timestep')
@@ -789,6 +932,7 @@ contains
 
          ! Visualization output
          if (viz_evt%occurs()) call viz%write(time=time%t)
+         if (plicviz_evt%occurs()) call plicviz%write(time=time%t)
 
          ! Checkpoint save
          if (save_evt%occurs()) then
@@ -802,6 +946,7 @@ contains
          call fs%get_info()
          call mfile%write()
          call consfile%write()
+         call vaporfile%write()
          call cflfile%write()
          call tfile%write()
 
@@ -897,10 +1042,12 @@ contains
       call IBw%finalize()
       ! Finalize materials
       call water%finalize()
-      call air%finalize()
+      call gas%finalize()
       ! Finalize visualization
       call viz%finalize()
       call viz_evt%finalize()
+      call plicviz%finalize()
+      call plicviz_evt%finalize()
       ! Finalize checkpoint
       call save_evt%finalize()
       call io%finalize()
@@ -908,6 +1055,7 @@ contains
       call mfile%finalize()
       call cflfile%finalize()
       call consfile%finalize()
+      call vaporfile%finalize()
       call gridfile%finalize()
       call tfile%finalize()
    end subroutine simulation_final

@@ -104,7 +104,7 @@ contains
       r=sqrt((xyz(1))**2+xyz(2)**2+xyz(3)**2)
       if (r.gt.1.0e-12_WP) then
          theta= acos(xyz(3)/r)
-         phi  =atan2(xyz(2),xyz(1)-x_drop)
+         phi  =atan2(xyz(2),xyz(1))
       else
          theta=0.0_WP
          phi  =0.0_WP

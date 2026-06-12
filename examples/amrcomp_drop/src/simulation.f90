@@ -101,7 +101,7 @@ contains
       real(WP) :: G,r,theta,phi,perturb
       integer :: i
       !G=0.5_WP-sqrt((xyz(1)-x_drop)**2+xyz(2)**2+xyz(3)**2)
-      r=sqrt((xyz(1)-x_drop)**2+xyz(2)**2+xyz(3)**2)
+      r=sqrt((xyz(1))**2+xyz(2)**2+xyz(3)**2)
       if (r.gt.1.0e-12_WP) then
          theta= acos(xyz(3)/r)
          phi  =atan2(xyz(2),xyz(1)-x_drop)
@@ -115,7 +115,7 @@ contains
          perturb=perturb+amp_modes(i)*spherical_harmonic(l_modes(i),m_modes(i),theta,phi+phase_modes(i))
       end do
       G=0.5_WP+perturb-r
-      if (amr%nz.eq.1) G=0.5_WP-sqrt((xyz(1)-x_drop)**2+xyz(2)**2) ! Enable quasi-2D runs
+      if (amr%nz.eq.1) G=0.5_WP-sqrt((xyz(1))**2+xyz(2)**2) ! Enable quasi-2D runs
    end function sphere_levelset
 
    !> Compute viscosity: Sutherland for gas, VF-weighted blend with liquid
@@ -952,6 +952,12 @@ contains
 
       end do
 
+      ! Force a final checkpoint on exit
+      final_checkpoint: block
+         use string, only: rtoa
+         call io%write(dirname='restart/drop_'//trim(adjustl(rtoa(time%t))),time=time%t,step=time%n)
+      end block final_checkpoint
+
    contains
 
       !> Apply IB forcing - zero Q inside solid and apply quasi-Neumann
@@ -1017,12 +1023,6 @@ contains
             call amr%mfiter_destroy(mfi)
          end do
       end subroutine apply_ib_forcing
-
-      ! Force a final checkpoint on exit
-      final_checkpoint: block
-         use string, only: rtoa
-         call io%write(dirname='restart/drop_'//trim(adjustl(rtoa(time%t))),time=time%t,step=time%n)
-      end block final_checkpoint
 
    end subroutine simulation_run
 

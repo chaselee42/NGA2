@@ -754,10 +754,10 @@ contains
                y(this%mat%ns)=max(0.0_WP,1.0_WP-sum(y(1:this%mat%ns-1)))
                ! Compute pressure via EoS: P = P(rho, I)
                pP(i,j,k,1)=this%mat%get_p_from_rho_e(rho=pQ(i,j,k,1),e=pI(i,j,k,1),y=y)
-               ! Compute speed of sound via EoS: C = C(rho, P)
-               pC(i,j,k,1)=this%mat%get_c_from_p_rho(p=pP(i,j,k,1),rho=pQ(i,j,k,1),y=y)
-               ! Compute temperature via EoS: T = T(rho, P)
-               pT(i,j,k,1)=this%mat%get_T_from_p_rho(p=pP(i,j,k,1),rho=pQ(i,j,k,1),y=y)
+               ! Compute speed of sound via EoS from (rho,e) -- avoids the ill-conditioned (p,rho) flash
+               pC(i,j,k,1)=this%mat%get_c_from_rho_e(rho=pQ(i,j,k,1),e=pI(i,j,k,1),y=y)
+               ! Compute temperature via EoS from (rho,e)
+               pT(i,j,k,1)=this%mat%get_T_from_rho_e(rho=pQ(i,j,k,1),e=pI(i,j,k,1),y=y)
             end do; end do; end do
          end do
          call this%amr%mfiter_destroy(mfi)
@@ -787,11 +787,12 @@ contains
          integer :: lvl,i,j,k,n
          type(amrex_mfiter) :: mfi
          type(amrex_box) :: fbx
-         real(WP) :: dxi,dyi,dzi,div,w
+         real(WP) :: dxi,dyi,dzi,div,w,fluxY
          real(WP), dimension(-2: 0) :: wenop
          real(WP), dimension(-1:+1) :: wenom
          real(WP), dimension(1:3,1:3) :: gradU
-         real(WP), dimension(:,:,:,:), contiguous, pointer :: pU,pV,pW,pQ,pUVW,pI,pT,pVisc,pBeta,pDiff,pY
+         real(WP), dimension(this%mat%ns) :: yf,hkm
+         real(WP), dimension(:,:,:,:), contiguous, pointer :: pU,pV,pW,pQ,pUVW,pI,pT,pVisc,pBeta,pDiff,pY,pP
          real(WP), dimension(:,:,:,:), contiguous, pointer :: pFx,pFy,pFz
          real(WP), parameter :: eps=1.0e-15_WP
          ! Traverse levels
@@ -814,6 +815,7 @@ contains
                pVisc=>this%visc%mf(lvl)%dataptr(mfi)
                pBeta=>this%beta%mf(lvl)%dataptr(mfi)
                pDiff=>this%diff%mf(lvl)%dataptr(mfi)
+               pP=>this%P%mf(lvl)%dataptr(mfi)
                pFx=>Fx(lvl)%dataptr(mfi)
                pFy=>Fy(lvl)%dataptr(mfi)
                pFz=>Fz(lvl)%dataptr(mfi)
@@ -859,10 +861,16 @@ contains
                   pFx(i,j,k,4)=pFx(i,j,k,4)+0.5_WP*sum(pVisc(i-1:i,j,k,1))*(gradU(3,1)+gradU(1,3))
                   ! Heat diffusion flux
                   pFx(i,j,k,5)=pFx(i,j,k,5)+0.5_WP*sum(pDiff(i-1:i,j,k,1))*dxi*(pT(i,j,k,1)-pT(i-1,j,k,1))
-                  ! Species diffusion flux (Le=1)
-                  do n=1,this%mat%ns-1
-                     pFx(i,j,k,this%Y_lo+n-1)=pFx(i,j,k,this%Y_lo+n-1)+0.5_WP*sum(pDiff(i-1:i,j,k,1))*dxi*(pY(i,j,k,n)-pY(i-1,j,k,n))
-                  end do
+                  ! Species diffusion flux (Le=1) with interdiffusion enthalpy via EOS partial enthalpies
+                  if (this%mat%ns.gt.1) then
+                     yf(1:this%mat%ns-1)=0.5_WP*(pY(i-1,j,k,:)+pY(i,j,k,:)); yf(this%mat%ns)=max(0.0_WP,1.0_WP-sum(yf(1:this%mat%ns-1)))
+                     call this%mat%get_hk_from_p_T(p=0.5_WP*sum(pP(i-1:i,j,k,1)),T=0.5_WP*sum(pT(i-1:i,j,k,1)),y=yf,hk=hkm)
+                     do n=1,this%mat%ns-1
+                        fluxY=0.5_WP*sum(pDiff(i-1:i,j,k,1))*dxi*(pY(i,j,k,n)-pY(i-1,j,k,n))
+                        pFx(i,j,k,this%Y_lo+n-1)=pFx(i,j,k,this%Y_lo+n-1)+fluxY
+                        pFx(i,j,k,5)=pFx(i,j,k,5)+fluxY*(hkm(n)-hkm(this%mat%ns))
+                     end do
+                  end if
                end do; end do; end do
                ! Y-fluxes
                fbx=mfi%nodaltilebox(2)
@@ -905,10 +913,16 @@ contains
                   pFy(i,j,k,4)=pFy(i,j,k,4)+0.5_WP*sum(pVisc(i,j-1:j,k,1))*(gradU(3,2)+gradU(2,3))
                   ! Heat diffusion flux
                   pFy(i,j,k,5)=pFy(i,j,k,5)+0.5_WP*sum(pDiff(i,j-1:j,k,1))*dyi*(pT(i,j,k,1)-pT(i,j-1,k,1))
-                  ! Species diffusion flux (Le=1)
-                  do n=1,this%mat%ns-1
-                     pFy(i,j,k,this%Y_lo+n-1)=pFy(i,j,k,this%Y_lo+n-1)+0.5_WP*sum(pDiff(i,j-1:j,k,1))*dyi*(pY(i,j,k,n)-pY(i,j-1,k,n))
-                  end do
+                  ! Species diffusion flux (Le=1) with interdiffusion enthalpy via EOS partial enthalpies
+                  if (this%mat%ns.gt.1) then
+                     yf(1:this%mat%ns-1)=0.5_WP*(pY(i,j-1,k,:)+pY(i,j,k,:)); yf(this%mat%ns)=max(0.0_WP,1.0_WP-sum(yf(1:this%mat%ns-1)))
+                     call this%mat%get_hk_from_p_T(p=0.5_WP*sum(pP(i,j-1:j,k,1)),T=0.5_WP*sum(pT(i,j-1:j,k,1)),y=yf,hk=hkm)
+                     do n=1,this%mat%ns-1
+                        fluxY=0.5_WP*sum(pDiff(i,j-1:j,k,1))*dyi*(pY(i,j,k,n)-pY(i,j-1,k,n))
+                        pFy(i,j,k,this%Y_lo+n-1)=pFy(i,j,k,this%Y_lo+n-1)+fluxY
+                        pFy(i,j,k,5)=pFy(i,j,k,5)+fluxY*(hkm(n)-hkm(this%mat%ns))
+                     end do
+                  end if
                end do; end do; end do
                ! Z-fluxes
                fbx=mfi%nodaltilebox(3)
@@ -951,10 +965,16 @@ contains
                   pFz(i,j,k,4)=pFz(i,j,k,4)+0.5_WP*sum(pVisc(i,j,k-1:k,1))*(gradU(3,3)+gradU(3,3))+0.5_WP*(sum(pBeta(i,j,k-1:k,1))-2.0_WP/3.0_WP*sum(pVisc(i,j,k-1:k,1)))*div
                   ! Heat diffusion flux
                   pFz(i,j,k,5)=pFz(i,j,k,5)+0.5_WP*sum(pDiff(i,j,k-1:k,1))*dzi*(pT(i,j,k,1)-pT(i,j,k-1,1))
-                  ! Species diffusion flux (Le=1)
-                  do n=1,this%mat%ns-1
-                     pFz(i,j,k,this%Y_lo+n-1)=pFz(i,j,k,this%Y_lo+n-1)+0.5_WP*sum(pDiff(i,j,k-1:k,1))*dzi*(pY(i,j,k,n)-pY(i,j,k-1,n))
-                  end do
+                  ! Species diffusion flux (Le=1) with interdiffusion enthalpy via EOS partial enthalpies
+                  if (this%mat%ns.gt.1) then
+                     yf(1:this%mat%ns-1)=0.5_WP*(pY(i,j,k-1,:)+pY(i,j,k,:)); yf(this%mat%ns)=max(0.0_WP,1.0_WP-sum(yf(1:this%mat%ns-1)))
+                     call this%mat%get_hk_from_p_T(p=0.5_WP*sum(pP(i,j,k-1:k,1)),T=0.5_WP*sum(pT(i,j,k-1:k,1)),y=yf,hk=hkm)
+                     do n=1,this%mat%ns-1
+                        fluxY=0.5_WP*sum(pDiff(i,j,k-1:k,1))*dzi*(pY(i,j,k,n)-pY(i,j,k-1,n))
+                        pFz(i,j,k,this%Y_lo+n-1)=pFz(i,j,k,this%Y_lo+n-1)+fluxY
+                        pFz(i,j,k,5)=pFz(i,j,k,5)+fluxY*(hkm(n)-hkm(this%mat%ns))
+                     end do
+                  end if
                end do; end do; end do
             end do
             call this%amr%mfiter_destroy(mfi)
@@ -1101,7 +1121,7 @@ contains
       type(amrex_mfiter) :: mfi
       type(amrex_box) :: bx
       integer :: lvl,i,j,k,ierr
-      real(WP), dimension(:,:,:,:), contiguous, pointer :: pQ,pP,pUVW,pVisc,pBeta,pDiff,pT,pC,pY
+      real(WP), dimension(:,:,:,:), contiguous, pointer :: pQ,pP,pUVW,pVisc,pBeta,pDiff,pT,pC,pY,pI
       real(WP) :: dxi,dyi,dzi,rho,conv,pgrad,viscmax,cv,alpha_heat
       real(WP), dimension(this%mat%ns) :: y
       ! Get convective CFL from parent
@@ -1128,6 +1148,7 @@ contains
             pP=>this%P%mf(lvl)%dataptr(mfi)
             pUVW=>this%UVW%mf(lvl)%dataptr(mfi)
             pC=>this%C%mf(lvl)%dataptr(mfi)
+            pI=>this%I%mf(lvl)%dataptr(mfi)
             if (this%mat%ns.gt.1) pY=>this%Y%mf(lvl)%dataptr(mfi)
             ! Loop over interior tiles
             bx=mfi%tilebox()
@@ -1136,7 +1157,7 @@ contains
                ! Heat-diffusion CFL: thermal diffusivity alpha=lambda/(rho*cv)
                if (this%mat%ns.gt.1) y(1:this%mat%ns-1)=pY(i,j,k,:)
                y(this%mat%ns)=max(0.0_WP,1.0_WP-sum(y(1:this%mat%ns-1)))
-               cv=this%mat%get_cv_from_rho_T(rho,pT(i,j,k,1),y)
+               cv=this%mat%get_cv_from_rho_e(rho,pI(i,j,k,1),y)
                alpha_heat=pDiff(i,j,k,1)/max(rho*cv,tiny(1.0_WP))
                ! Viscous-like CFL
                viscmax=max(pVisc(i,j,k,1)/rho,pBeta(i,j,k,1)/rho,alpha_heat)

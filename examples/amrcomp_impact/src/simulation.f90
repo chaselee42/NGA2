@@ -12,7 +12,8 @@ module simulation
    use amrio_class,       only: amrio
    use nasg_class,        only: nasg
    use ideal_gas_class,   only: ideal_gas
-   use relax_ig_nasg_class, only: relax_ig_nasg
+   use relax_ig_nasg_class, only: PThybrid
+   use safe_relax_class,  only: safe_relax
    implicit none
    private
 
@@ -41,14 +42,17 @@ module simulation
    real(WP) :: restart_time
 
    !> Simulation monitoring
-   type(monitor) :: mfile,consfile,cflfile,gridfile,tfile
-   
+   type(monitor) :: mfile,consfile,cflfile,gridfile,tfile,rescfile
+   !> Relaxation-model census (relax_model%acc reduced across ranks for the rescue monitor)
+   real(WP) :: diss_n=0.0_WP,diss_m=0.0_WP
+   real(WP) :: quad_n=0.0_WP,swap_n=0.0_WP,flr_n=0.0_WP,flr_e=0.0_WP,stuck_n=0.0_WP
+
    !> Materials
    type(nasg),      target :: water
    type(ideal_gas), target :: gas
 
    !> Relaxation model
-   type(relax_ig_nasg), target :: relax_model
+   type(safe_relax), target :: relax_model
 
    !> Flow parameters
    real(WP) :: rhoG1,pG1,u1           !< Pre-shock gas state
@@ -154,29 +158,29 @@ contains
             ! Get tilebox with overlap
             bx=mfi%growntilebox(fs%nover)
             do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-               ! Gas viscosity from Sutherland
-               mu_g=(1.0_WP+Suth_T)*min(pTG(i,j,k,1),Tmax_visc)**Suth_n/(Reynolds*(min(pTG(i,j,k,1),Tmax_visc)+Suth_T))
-               ! Liquid viscosity from ratio
-               mu_l=visc_ratio*Reynolds**(-1.0_WP)
-               ! Mixture viscosity
-               !pVisc(i,j,k,1)=pVF(i,j,k,1)*mu_l+(1.0_WP-pVF(i,j,k,1))*mu_g ! Arithmetic averaging
-               pVisc(i,j,k,1)=1.0_WP/(pVF(i,j,k,1)/max(mu_l,myeps)+(1.0_WP-pVF(i,j,k,1))/max(mu_g,myeps)) ! Harmonic averaging
-               ! Zero bulk viscosity
-               pBeta(i,j,k,1)=0.0_WP
-               ! Phasic heat diffusivities: gas k=cp*mu/Pr, liquid from ratio
-               pDiffG(i,j,k,1)=gas%cp*mu_g/Prandtl
-               pDiffL(i,j,k,1)=diff_ratio*gas%cp/(Reynolds*Prandtl)
-               ! Apply sponge layer viscosity
-               r_cyl=sqrt((amr%ylo+(real(j,WP)+0.5_WP)*amr%dy(lvl))**2+(amr%zlo+(real(k,WP)+0.5_WP)*amr%dz(lvl))**2)
-               if (amr%nz.eq.1) r_cyl=sqrt((amr%ylo+(real(j,WP)+0.5_WP)*amr%dy(lvl))**2) ! Enable quasi-2D runs
-               if (r_cyl.gt.R_spg) then
-                  blend=min((r_cyl-R_spg)/L_spg,1.0_WP)**2
-                  mu_spg=nu_spg/(pVF(i,j,k,1)/max(pRHOL(i,j,k,1),myeps)+(1.0_WP-pVF(i,j,k,1))/max(pRHOG(i,j,k,1),myeps))
-                  pVisc(i,j,k,1)=max(pVisc(i,j,k,1),blend*mu_spg)
-                  pDiffL(i,j,k,1)=max(pDiffL(i,j,k,1),Cdiff*blend*mu_spg)
-                  pDiffG(i,j,k,1)=max(pDiffG(i,j,k,1),Cdiff*blend*mu_spg)
-               end if
-            end do; end do; end do
+                     ! Gas viscosity from Sutherland
+                     mu_g=(1.0_WP+Suth_T)*min(pTG(i,j,k,1),Tmax_visc)**Suth_n/(Reynolds*(min(pTG(i,j,k,1),Tmax_visc)+Suth_T))
+                     ! Liquid viscosity from ratio
+                     mu_l=visc_ratio*Reynolds**(-1.0_WP)
+                     ! Mixture viscosity
+                     !pVisc(i,j,k,1)=pVF(i,j,k,1)*mu_l+(1.0_WP-pVF(i,j,k,1))*mu_g ! Arithmetic averaging
+                     pVisc(i,j,k,1)=1.0_WP/(pVF(i,j,k,1)/max(mu_l,myeps)+(1.0_WP-pVF(i,j,k,1))/max(mu_g,myeps)) ! Harmonic averaging
+                     ! Zero bulk viscosity
+                     pBeta(i,j,k,1)=0.0_WP
+                     ! Phasic heat diffusivities: gas k=cp*mu/Pr, liquid from ratio
+                     pDiffG(i,j,k,1)=gas%cp*mu_g/Prandtl
+                     pDiffL(i,j,k,1)=diff_ratio*gas%cp/(Reynolds*Prandtl)
+                     ! Apply sponge layer viscosity
+                     r_cyl=sqrt((amr%ylo+(real(j,WP)+0.5_WP)*amr%dy(lvl))**2+(amr%zlo+(real(k,WP)+0.5_WP)*amr%dz(lvl))**2)
+                     if (amr%nz.eq.1) r_cyl=sqrt((amr%ylo+(real(j,WP)+0.5_WP)*amr%dy(lvl))**2) ! Enable quasi-2D runs
+                     if (r_cyl.gt.R_spg) then
+                        blend=min((r_cyl-R_spg)/L_spg,1.0_WP)**2
+                        mu_spg=nu_spg/(pVF(i,j,k,1)/max(pRHOL(i,j,k,1),myeps)+(1.0_WP-pVF(i,j,k,1))/max(pRHOG(i,j,k,1),myeps))
+                        pVisc(i,j,k,1)=max(pVisc(i,j,k,1),blend*mu_spg)
+                        pDiffL(i,j,k,1)=max(pDiffL(i,j,k,1),Cdiff*blend*mu_spg)
+                        pDiffG(i,j,k,1)=max(pDiffG(i,j,k,1),Cdiff*blend*mu_spg)
+                     end if
+                  end do; end do; end do
          end do
          call amr%mfiter_destroy(mfi)
       end do
@@ -217,32 +221,32 @@ contains
          ! Loop over grown tilebox
          bx=mfi%growntilebox(solver%nover)
          do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-            ! Compute VF and barycenters from levelset
-            call initialize_volume_moments(lo=[solver%amr%xlo+real(i  ,WP)*dx,solver%amr%ylo+real(j  ,WP)*dy,solver%amr%zlo+real(k  ,WP)*dz], &
-            &                              hi=[solver%amr%xlo+real(i+1,WP)*dx,solver%amr%ylo+real(j+1,WP)*dy,solver%amr%zlo+real(k+1,WP)*dz], &
-            &                              levelset=sphere_levelset,time=time,level=nref,VFlo=VFlo,VF=myVF,BL=BL,BG=BG)
-            ! Store volume fraction
-            pVF(i,j,k,1)=myVF
-            ! Store barycenters
-            if (lvl.eq.solver%amr%maxlvl) then
-               pCL(i,j,k,:)=BL
-               pCG(i,j,k,:)=BG
-            end if
-            ! Compute local gas state from shock profile
-            x_cc=solver%amr%xlo+(real(i,WP)+0.5_WP)*dx
-            H=Hshock(x=Xs-x_cc,delta=0.5_WP*dx)
-            rhoG=rhoG1+(rhoG2-rhoG1)*H
-            pG  =pG1  +(pG2  -pG1  )*H
-            uG  =u1   +(u2   -u1   )*H
-            ! Set conserved variables: Q=(VF*rhoL, (1-VF)*rhoG, VF*rhoL*IL, (1-VF)*rhoG*IG, rho_mix*U, 0, 0)
-            pQ(i,j,k,1)=(       myVF)*rhoL1
-            pQ(i,j,k,2)=(1.0_WP-myVF)*rhoG
-            pQ(i,j,k,3)=pQ(i,j,k,1)*IEL
-            pQ(i,j,k,4)=pQ(i,j,k,2)*gas%get_e_from_p_rho(p=pG,rho=rhoG,y=[1.0_WP])
-            pQ(i,j,k,5)=(pQ(i,j,k,1)+pQ(i,j,k,2))*uG
-            pQ(i,j,k,6)=0.0_WP
-            pQ(i,j,k,7)=0.0_WP
-         end do; end do; end do
+                  ! Compute VF and barycenters from levelset
+                  call initialize_volume_moments(lo=[solver%amr%xlo+real(i  ,WP)*dx,solver%amr%ylo+real(j  ,WP)*dy,solver%amr%zlo+real(k  ,WP)*dz], &
+                  &                              hi=[solver%amr%xlo+real(i+1,WP)*dx,solver%amr%ylo+real(j+1,WP)*dy,solver%amr%zlo+real(k+1,WP)*dz], &
+                  &                              levelset=sphere_levelset,time=time,level=nref,VFlo=VFlo,VF=myVF,BL=BL,BG=BG)
+                  ! Store volume fraction
+                  pVF(i,j,k,1)=myVF
+                  ! Store barycenters
+                  if (lvl.eq.solver%amr%maxlvl) then
+                     pCL(i,j,k,:)=BL
+                     pCG(i,j,k,:)=BG
+                  end if
+                  ! Compute local gas state from shock profile
+                  x_cc=solver%amr%xlo+(real(i,WP)+0.5_WP)*dx
+                  H=Hshock(x=Xs-x_cc,delta=0.5_WP*dx)
+                  rhoG=rhoG1+(rhoG2-rhoG1)*H
+                  pG  =pG1  +(pG2  -pG1  )*H
+                  uG  =u1   +(u2   -u1   )*H
+                  ! Set conserved variables: Q=(VF*rhoL, (1-VF)*rhoG, VF*rhoL*IL, (1-VF)*rhoG*IG, rho_mix*U, 0, 0)
+                  pQ(i,j,k,1)=(       myVF)*rhoL1
+                  pQ(i,j,k,2)=(1.0_WP-myVF)*rhoG
+                  pQ(i,j,k,3)=pQ(i,j,k,1)*IEL
+                  pQ(i,j,k,4)=pQ(i,j,k,2)*gas%get_e_from_p_rho(p=pG,rho=rhoG,y=[1.0_WP])
+                  pQ(i,j,k,5)=(pQ(i,j,k,1)+pQ(i,j,k,2))*uG
+                  pQ(i,j,k,6)=0.0_WP
+                  pQ(i,j,k,7)=0.0_WP
+               end do; end do; end do
       end do
       call amrex_mfiter_destroy(mfi)
    end subroutine shockdrop_init
@@ -271,14 +275,14 @@ contains
                   end do; end do; end do
           case ('Q')  ! Cell-centered Q in pre-shock gas
             do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-               p(i,j,k,1)=0.0_WP                  ! No liquid
-               p(i,j,k,2)=rhoG1                   ! Gas density
-               p(i,j,k,3)=0.0_WP                  ! No liquid energy
-               p(i,j,k,4)=rhoG1*gas%get_e_from_p_rho(p=pG1,rho=rhoG1,y=[1.0_WP]) ! Gas internal energy
-               p(i,j,k,5)=rhoG1*u1                ! X-momentum
-               p(i,j,k,6)=0.0_WP
-               p(i,j,k,7)=0.0_WP
-            end do; end do; end do
+                     p(i,j,k,1)=0.0_WP                  ! No liquid
+                     p(i,j,k,2)=rhoG1                   ! Gas density
+                     p(i,j,k,3)=0.0_WP                  ! No liquid energy
+                     p(i,j,k,4)=rhoG1*gas%get_e_from_p_rho(p=pG1,rho=rhoG1,y=[1.0_WP]) ! Gas internal energy
+                     p(i,j,k,5)=rhoG1*u1                ! X-momentum
+                     p(i,j,k,6)=0.0_WP
+                     p(i,j,k,7)=0.0_WP
+                  end do; end do; end do
          end select
       end select
    end subroutine shock_dirichlet
@@ -328,40 +332,40 @@ contains
          ! Loop over tile
          bx=mfi%tilebox()
          do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-            ! Refinement zone: away from sponge unless below maxlvl-1
-            r_cyl=sqrt((solver%amr%ylo+(real(j,WP)+0.5_WP)*dy)**2+(solver%amr%zlo+(real(k,WP)+0.5_WP)*dz)**2)
-            in_zone=(r_cyl.lt.R_spg+L_spg.or.lvl.lt.solver%amr%maxlvl-1)
+                  ! Refinement zone: away from sponge unless below maxlvl-1
+                  r_cyl=sqrt((solver%amr%ylo+(real(j,WP)+0.5_WP)*dy)**2+(solver%amr%zlo+(real(k,WP)+0.5_WP)*dz)**2)
+                  in_zone=(r_cyl.lt.R_spg+L_spg.or.lvl.lt.solver%amr%maxlvl-1)
 
-            ! Mixture density laplacian error
-            rho_cc=sum(pQ(i  ,j,  k,  1:2))
-            rho_xp=sum(pQ(i+1,j,  k,  1:2)); rho_xm=sum(pQ(i-1,j,  k,  1:2))
-            rho_yp=sum(pQ(i,  j+1,k,  1:2)); rho_ym=sum(pQ(i,  j-1,k,  1:2))
-            rho_zp=sum(pQ(i,  j,  k+1,1:2)); rho_zm=sum(pQ(i,  j,  k-1,1:2))
-            if (lap_error(rho_cc,rho_xm,rho_xp,rho_ym,rho_yp,rho_zm,rho_zp,Reps).gt.Rho_tag.and.in_zone) tagarr(i,j,k,1)=SETtag
+                  ! Mixture density laplacian error
+                  rho_cc=sum(pQ(i  ,j,  k,  1:2))
+                  rho_xp=sum(pQ(i+1,j,  k,  1:2)); rho_xm=sum(pQ(i-1,j,  k,  1:2))
+                  rho_yp=sum(pQ(i,  j+1,k,  1:2)); rho_ym=sum(pQ(i,  j-1,k,  1:2))
+                  rho_zp=sum(pQ(i,  j,  k+1,1:2)); rho_zm=sum(pQ(i,  j,  k-1,1:2))
+                  if (lap_error(rho_cc,rho_xm,rho_xp,rho_ym,rho_yp,rho_zm,rho_zp,Reps).gt.Rho_tag.and.in_zone) tagarr(i,j,k,1)=SETtag
 
-            ! Liquid pressure gradient
-            if (pVF(i,j,k,1).gt.0.0_WP) then
-               if (grd_error(pPL(i,j,k,1),pPL(i-1,j,k,1),pPL(i+1,j,k,1),pPL(i,j-1,k,1),pPL(i,j+1,k,1),pPL(i,j,k-1,1),pPL(i,j,k+1,1),Peps).gt.P_tag.and.in_zone) tagarr(i,j,k,1)=SETtag
-            end if
+                  ! Liquid pressure gradient
+                  if (pVF(i,j,k,1).gt.0.0_WP) then
+                     if (grd_error(pPL(i,j,k,1),pPL(i-1,j,k,1),pPL(i+1,j,k,1),pPL(i,j-1,k,1),pPL(i,j+1,k,1),pPL(i,j,k-1,1),pPL(i,j,k+1,1),Peps).gt.P_tag.and.in_zone) tagarr(i,j,k,1)=SETtag
+                  end if
 
-            ! SGS cell Reynolds number
-            lapU=(pUVW(i+1,j,k,1)-2.0_WP*pUVW(i,j,k,1)+pUVW(i-1,j,k,1))*dxi2+(pUVW(i,j+1,k,1)-2.0_WP*pUVW(i,j,k,1)+pUVW(i,j-1,k,1))*dyi2+(pUVW(i,j,k+1,1)-2.0_WP*pUVW(i,j,k,1)+pUVW(i,j,k-1,1))*dzi2
-            lapV=(pUVW(i+1,j,k,2)-2.0_WP*pUVW(i,j,k,2)+pUVW(i-1,j,k,2))*dxi2+(pUVW(i,j+1,k,2)-2.0_WP*pUVW(i,j,k,2)+pUVW(i,j-1,k,2))*dyi2+(pUVW(i,j,k+1,2)-2.0_WP*pUVW(i,j,k,2)+pUVW(i,j,k-1,2))*dzi2
-            lapW=(pUVW(i+1,j,k,3)-2.0_WP*pUVW(i,j,k,3)+pUVW(i-1,j,k,3))*dxi2+(pUVW(i,j+1,k,3)-2.0_WP*pUVW(i,j,k,3)+pUVW(i,j-1,k,3))*dyi2+(pUVW(i,j,k+1,3)-2.0_WP*pUVW(i,j,k,3)+pUVW(i,j,k-1,3))*dzi2
-            u_sgs=0.2_WP*sqrt(lapU**2+lapV**2+lapW**2)*delta2
-            Re=Reynolds*u_sgs*delta
-            if (Re.gt.Re_tag.and.in_zone) tagarr(i,j,k,1)=SETtag
+                  ! SGS cell Reynolds number
+                  lapU=(pUVW(i+1,j,k,1)-2.0_WP*pUVW(i,j,k,1)+pUVW(i-1,j,k,1))*dxi2+(pUVW(i,j+1,k,1)-2.0_WP*pUVW(i,j,k,1)+pUVW(i,j-1,k,1))*dyi2+(pUVW(i,j,k+1,1)-2.0_WP*pUVW(i,j,k,1)+pUVW(i,j,k-1,1))*dzi2
+                  lapV=(pUVW(i+1,j,k,2)-2.0_WP*pUVW(i,j,k,2)+pUVW(i-1,j,k,2))*dxi2+(pUVW(i,j+1,k,2)-2.0_WP*pUVW(i,j,k,2)+pUVW(i,j-1,k,2))*dyi2+(pUVW(i,j,k+1,2)-2.0_WP*pUVW(i,j,k,2)+pUVW(i,j,k-1,2))*dzi2
+                  lapW=(pUVW(i+1,j,k,3)-2.0_WP*pUVW(i,j,k,3)+pUVW(i-1,j,k,3))*dxi2+(pUVW(i,j+1,k,3)-2.0_WP*pUVW(i,j,k,3)+pUVW(i,j-1,k,3))*dyi2+(pUVW(i,j,k+1,3)-2.0_WP*pUVW(i,j,k,3)+pUVW(i,j,k-1,3))*dzi2
+                  u_sgs=0.2_WP*sqrt(lapU**2+lapV**2+lapW**2)*delta2
+                  Re=Reynolds*u_sgs*delta
+                  if (Re.gt.Re_tag.and.in_zone) tagarr(i,j,k,1)=SETtag
 
-            ! Ducros compression switch
-            divu =0.5_WP*dxi*(pUVW(i+1,j,k,1)-pUVW(i-1,j,k,1))+0.5_WP*dyi*(pUVW(i,j+1,k,2)-pUVW(i,j-1,k,2))+0.5_WP*dzi*(pUVW(i,j,k+1,3)-pUVW(i,j,k-1,3))
-            vortx=0.5_WP*dyi*(pUVW(i,j+1,k,3)-pUVW(i,j-1,k,3))-0.5_WP*dzi*(pUVW(i,j,k+1,2)-pUVW(i,j,k-1,2))
-            vorty=0.5_WP*dzi*(pUVW(i,j,k+1,1)-pUVW(i,j,k-1,1))-0.5_WP*dxi*(pUVW(i+1,j,k,3)-pUVW(i-1,j,k,3))
-            vortz=0.5_WP*dxi*(pUVW(i+1,j,k,2)-pUVW(i-1,j,k,2))-0.5_WP*dyi*(pUVW(i,j+1,k,1)-pUVW(i,j-1,k,1))
-            vort=sqrt(vortx**2+vorty**2+vortz**2)
-            Deps=(Cduc*pC(i,j,k,1)/delta)**2
-            Ducros=divu**2/max(divu**2+vort**2+Deps,tiny(1.0_WP))
-            if (divu.lt.0.0_WP.and.Ducros.gt.Ducros_tag.and.in_zone) tagarr(i,j,k,1)=SETtag
-         end do; end do; end do
+                  ! Ducros compression switch
+                  divu =0.5_WP*dxi*(pUVW(i+1,j,k,1)-pUVW(i-1,j,k,1))+0.5_WP*dyi*(pUVW(i,j+1,k,2)-pUVW(i,j-1,k,2))+0.5_WP*dzi*(pUVW(i,j,k+1,3)-pUVW(i,j,k-1,3))
+                  vortx=0.5_WP*dyi*(pUVW(i,j+1,k,3)-pUVW(i,j-1,k,3))-0.5_WP*dzi*(pUVW(i,j,k+1,2)-pUVW(i,j,k-1,2))
+                  vorty=0.5_WP*dzi*(pUVW(i,j,k+1,1)-pUVW(i,j,k-1,1))-0.5_WP*dxi*(pUVW(i+1,j,k,3)-pUVW(i-1,j,k,3))
+                  vortz=0.5_WP*dxi*(pUVW(i+1,j,k,2)-pUVW(i-1,j,k,2))-0.5_WP*dyi*(pUVW(i,j+1,k,1)-pUVW(i,j-1,k,1))
+                  vort=sqrt(vortx**2+vorty**2+vortz**2)
+                  Deps=(Cduc*pC(i,j,k,1)/delta)**2
+                  Ducros=divu**2/max(divu**2+vort**2+Deps,tiny(1.0_WP))
+                  if (divu.lt.0.0_WP.and.Ducros.gt.Ducros_tag.and.in_zone) tagarr(i,j,k,1)=SETtag
+               end do; end do; end do
       end do
       call solver%amr%mfiter_destroy(mfi)
    end subroutine my_tagger
@@ -563,7 +567,17 @@ contains
          if (amr%nz.eq.1) fs%interp_vel=interp_face_lin
          ! Provide pressure relaxation model
          call relax_model%initialize(gas=gas,liq=water); fs%relax=>relax_model
-         relax_model%model=1 ! 1=Prelax (mechanical only); 2=pT
+         relax_model%model=PThybrid
+         relax_model%RHOGmin=0.0_WP
+         relax_model%vol=amr%cell_vol(amr%maxlvl)
+         fs%merge_sick=100.0_WP
+         relax_model%diss_P=200.0_WP
+         fs%Pmin_liq=-0.98_WP*water%pinf
+         fs%Tmin_liq=0.1_WP
+         fs%Pmin_gas=1.0e-4_WP
+         fs%Tmin_gas=0.1_WP
+         relax_model%Pmin_liq=fs%Pmin_liq; relax_model%Tmin_liq=fs%Tmin_liq
+         relax_model%Pmin_gas=fs%Pmin_gas; relax_model%Tmin_gas=fs%Tmin_gas
          ! Set initial conditions
          fs%user_init=>shockdrop_init
 
@@ -788,6 +802,25 @@ contains
          call tfile%add_column(fs%nmixed_max,'mixed_max')
          call tfile%add_column(fs%nmixed_min,'mixed_min')
          call tfile%write()
+         ! Create rescue-census monitor (cumulative counters/amounts per mechanism)
+         rescfile=monitor(amRoot=amr%amRoot,name='rescue')
+         call rescfile%add_column(time%n,'Timestep')
+         call rescfile%add_column(time%t,'Time')
+         call rescfile%add_column(fs%resc_nl,'LiqResc n')
+         call rescfile%add_column(fs%resc_ml,'LiqResc dm')
+         call rescfile%add_column(fs%resc_el,'LiqResc dE')
+         call rescfile%add_column(fs%resc_ng,'GasResc n')
+         call rescfile%add_column(fs%resc_mg,'GasResc dm')
+         call rescfile%add_column(fs%resc_eg,'GasResc dE')
+         call rescfile%add_column(diss_n,'Diss n')
+         call rescfile%add_column(diss_m,'Diss dm')
+         call rescfile%add_column(quad_n,'Quad n')
+         call rescfile%add_column(swap_n,'Swap n')
+         call rescfile%add_column(flr_n,'Floor n')
+         call rescfile%add_column(flr_e,'Floor dE')
+         call rescfile%add_column(stuck_n,'Stuck n')
+         call rescfile%add_column(fs%pool_n,'Pool n')
+         call rescfile%write()
       end block create_monitors
 
    end subroutine simulation_init
@@ -886,10 +919,21 @@ contains
 
          ! Perform and output monitoring
          call fs%get_info()
+         relax_census: block
+            use mpi_f08,  only: MPI_ALLREDUCE,MPI_IN_PLACE,MPI_SUM
+            use parallel, only: MPI_REAL_WP
+            real(WP), dimension(7) :: tmp
+            integer :: ierr
+            tmp=relax_model%acc
+            call MPI_ALLREDUCE(MPI_IN_PLACE,tmp,7,MPI_REAL_WP,MPI_SUM,amr%comm,ierr)
+            diss_n=tmp(1); diss_m=tmp(2); quad_n=tmp(3); swap_n=tmp(4)
+            flr_n=tmp(5); flr_e=tmp(6); stuck_n=tmp(7)
+         end block relax_census
          call mfile%write()
          call consfile%write()
          call cflfile%write()
          call tfile%write()
+         call rescfile%write()
 
       end do
 
@@ -931,6 +975,7 @@ contains
       call consfile%finalize()
       call gridfile%finalize()
       call tfile%finalize()
+      call rescfile%finalize()
    end subroutine simulation_final
 
 end module simulation

@@ -23,8 +23,8 @@ Tag Ducros value:   0.5
 
 # Geometry: true (reflecting) wall BC shifted to x=-Wall thickness; PD wall in [-Wall thickness,0]
 Domain length:  20      # length unchanged; domain SHIFTED to [-Wall thickness, 20-Wall thickness] = [-1,19]
-Drop location:  0.6     # liquid drop near the wall (front ~0.1 from x=0); launched at Impact velocity into at-rest gas
-Shock location: 25      # parked outside the domain -> uniform at-rest (post-shock) gas; drop velocity imposed directly
+Drop location:  11.5     # liquid drop near the wall (front ~0.1 from x=0); launched at Impact velocity into at-rest gas
+Shock location: 10.9      # parked outside the domain -> uniform at-rest (post-shock) gas; drop velocity imposed directly
 Wall BC:        slip
 
 # ---- PD solid bodies (clamped wall slab + incoming disk projectile) ----
@@ -67,6 +67,13 @@ Diffusivity ratio: 8.34
 Sutherland exponent:    1.5
 Sutherland temperature: 0.073
 
+# Spherical harmonics perturbation
+SphHarm Nmode: 8
+SphHarm l: 20 21 22 23 24 25 26 27
+SphHarm m:  0  7 -11 15 -5 20 -18 10
+SphHarm amp: 1e-3 1e-3 1e-3 1e-3 1e-3 1e-3 1e-3 1e-3
+SphHarm phase: 7.21700E-01  4.83624E+00  3.62682E+00  5.36249E+00  2.91468E+00  5.27352E+00  2.45123E+00  3.82910E+00
+
 # Time integration
 Max dt:   2e-3
 Max CFL:  0.75
@@ -75,4 +82,5 @@ Max time: 15            # disk front (9.5) reaches wall (0) at t~9.5 at U=1, the
 # Output
 Output period:     5e-2
 Checkpoint period: -1
+Max wall time: 
 Restart from:

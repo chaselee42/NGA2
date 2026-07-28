@@ -2,7 +2,7 @@
 module simulation
    use precision,           only: WP
    use amrgrid_class,       only: amrgrid
-   use amrcomp_class,       only: amrcomp
+   use amrcomp_gpu_class,   only: amrcomp
    use amrviz_class,        only: amrviz
    use amrdata_class,       only: amrdata
    use timetracker_class,   only: timetracker

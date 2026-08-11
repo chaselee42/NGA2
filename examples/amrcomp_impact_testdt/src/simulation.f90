@@ -1,19 +1,19 @@
-!> AMR compressible drop test case
+!> AMR compressible impact test case
 module simulation
-   use precision,           only: WP
-   use string,              only: str_medium
-   use amrgrid_class,       only: amrgrid
-   use amrmpcomp_class,     only: amrmpcomp
-   use amrviz_class,        only: amrviz
-   use amrdata_class,       only: amrdata
-   use timetracker_class,   only: timetracker
-   use event_class,         only: event
-   use monitor_class,       only: monitor
-   use amrio_class,         only: amrio
-   use nasg_class,          only: nasg
-   use ideal_gas_class,     only: ideal_gas
-   use relax_ig_nasg_class, only: relax_ig_nasg, PThybrid
-   use safe_relax_class,    only: safe_relax
+   use precision,         only: WP
+   use string,            only: str_medium
+   use amrgrid_class,     only: amrgrid
+   use amrmpcomp_class,   only: amrmpcomp
+   use amrviz_class,      only: amrviz
+   use amrdata_class,     only: amrdata
+   use timetracker_class, only: timetracker
+   use event_class,       only: event
+   use monitor_class,     only: monitor
+   use amrio_class,       only: amrio
+   use nasg_class,        only: nasg
+   use ideal_gas_class,   only: ideal_gas
+   use relax_ig_nasg_class, only: PThybrid
+   use safe_relax_class,  only: safe_relax
    implicit none
    private
 
@@ -77,12 +77,16 @@ module simulation
    real(WP) :: Suth_n=1.5_WP          !< Sutherland exponent (1.0 for constant)
    real(WP) :: Suth_T=0.4042_WP       !< Sutherland temperature (0.0 for constant)
 
-   !> Moving wall model
-   type(amrdata), target :: IBw
-   real(WP) :: Xw,Uw
+   !> Drop initial location
+   real(WP) :: x_drop
+
+   !> Wall BC type ('slip' or 'noslip')
+   character(len=str_medium) :: wall_bc_type
+
    !> Sponge parameters
    real(WP) :: R_spg=3.0_WP
    real(WP) :: L_spg=1.0_WP
+   ! real(WP) :: sponge_x
 
    !> Spherical harmonics perturbation parameters
    integer :: nsh_modes=0
@@ -111,10 +115,10 @@ contains
       real(WP) :: G,r,theta,phi,perturb
       integer :: i
       !G=0.5_WP-sqrt((xyz(1)-x_drop)**2+xyz(2)**2+xyz(3)**2)
-      r=sqrt((xyz(1))**2+xyz(2)**2+xyz(3)**2)
+      r=sqrt((xyz(1)-x_drop)**2+xyz(2)**2+xyz(3)**2)
       if (r.gt.1.0e-12_WP) then
          theta= acos(xyz(3)/r)
-         phi  =atan2(xyz(2),xyz(1))
+         phi  =atan2(xyz(2),xyz(1)-x_drop)
       else
          theta=0.0_WP
          phi  =0.0_WP
@@ -125,7 +129,7 @@ contains
          perturb=perturb+amp_modes(i)*spherical_harmonic(l_modes(i),m_modes(i),theta,phi+phase_modes(i))
       end do
       G=0.5_WP+perturb-r
-      if (amr%nz.eq.1) G=0.5_WP-sqrt((xyz(1))**2+xyz(2)**2) ! Enable quasi-2D runs
+      if (amr%nz.eq.1) G=0.5_WP-sqrt((xyz(1)-x_drop)**2+xyz(2)**2) ! Enable quasi-2D runs
    end function sphere_levelset
 
    !> Compute viscosity: Sutherland for gas, VF-weighted blend with liquid
@@ -171,9 +175,9 @@ contains
                      pVisc(i,j,k,1)=1.0_WP/(pVF(i,j,k,1)/max(mu_l,myeps)+(1.0_WP-pVF(i,j,k,1))/max(mu_g,myeps)) ! Harmonic averaging
                      ! Zero bulk viscosity
                      pBeta(i,j,k,1)=0.0_WP
-                     ! Phasic heat diffusivities: gas k=cp*mu/Pr, liquid from ratio (no blending - solver uses phasic fields)
-                     ! pDiffG(i,j,k,1)=gas%gamma*gas%cv*mu_g/Prandtl
-                     ! pDiffL(i,j,k,1)=diff_ratio*gas%gamma*air%cv/(Reynolds*Prandtl)
+                     ! Phasic heat diffusivities: gas k=cp*mu/Pr, liquid from ratio
+                     ! pDiffG(i,j,k,1)=gas%cp*mu_g/Prandtl
+                     ! pDiffL(i,j,k,1)=diff_ratio*gas%cp/(Reynolds*Prandtl)
                      ! Run with no heat transfer
                      pDiffG(i,j,k,1)=0.0_WP
                      pDiffL(i,j,k,1)=0.0_WP
@@ -193,7 +197,74 @@ contains
       end do
    end subroutine get_viscosities
 
-   !> User init callback - set Q and VF/barycenters for a drop at rest with a shock
+   ! !> Apply sponge layer
+   ! subroutine apply_vf_sponge()
+   !    use amrex_amr_module, only: amrex_mfiter,amrex_box
+   !    integer :: lvl,i,j,k
+   !    type(amrex_mfiter) :: mfi
+   !    type(amrex_box) :: bx
+   !    real(WP), dimension(:,:,:,:), contiguous, pointer :: pVF,pCL,pCG,pQ,pRHOG,pRHOL,pIG,pUVW,pVisc,pDiffL,pDiffG
+   !    real(WP), parameter :: VFcutoff=0.3_WP
+   !    real(WP) :: dx,dy,dz,dxi,dyi,dzi,xpos
+   !    real(WP) :: blend,nu_spg,mu_spg,mu_g,mu_l
+   !    ! Compute where sponge should start
+   !    sponge_x=x_drop+3.0_WP-time%t
+   !    ! Get maximum allowable kinematic viscosity in the sponge at finest level
+   !    nu_spg=max_cfl*amr%min_meshsize(amr%clvl())**2/(4.0_WP*time%dt)
+   !    ! Loop over levels
+   !    do lvl=0,amr%clvl()
+   !       dx=amr%dx(lvl); dxi=1.0_WP/dx
+   !       dy=amr%dy(lvl); dyi=1.0_WP/dy
+   !       dz=amr%dz(lvl); dzi=1.0_WP/dz
+   !       ! Loop over finest level tiles
+   !       call amr%mfiter_build(lvl=lvl,mfi=mfi)
+   !       do while (mfi%next())
+   !          ! Get pointers to data
+   !          pVF=>fs%VF%mf(lvl)%dataptr(mfi)
+   !          pCL=>fs%CL%dataptr(mfi)
+   !          pCG=>fs%CG%dataptr(mfi)
+   !          pQ=>fs%Q%mf(lvl)%dataptr(mfi)
+   !          pRHOG=>fs%RHOG%mf(lvl)%dataptr(mfi)
+   !          pRHOL=>fs%RHOL%mf(lvl)%dataptr(mfi)
+   !          pIG=>fs%IG%mf(lvl)%dataptr(mfi)
+   !          pUVW=>fs%UVW%mf(lvl)%dataptr(mfi)
+   !          pVisc=>fs%visc%mf(lvl)%dataptr(mfi)
+   !          pDiffL=>fs%diffL%mf(lvl)%dataptr(mfi)
+   !          pDiffG=>fs%diffG%mf(lvl)%dataptr(mfi)
+   !          ! Get tilebox with overlap
+   !          bx=mfi%growntilebox(fs%nover)
+   !          do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
+   !                   xpos=amr%xlo+(real(i,WP)+0.5_WP)*dx
+   !                   ! Apply visc and diff sponge
+   !                   if (xpos.gt.sponge_x) then
+   !                      blend=min((xpos-sponge_x)/L_spg,1.0_WP)**2
+   !                      mu_spg=nu_spg/(pVF(i,j,k,1)/max(pRHOL(i,j,k,1),myeps)+(1.0_WP-pVF(i,j,k,1))/max(pRHOG(i,j,k,1),myeps))
+   !                      pVisc(i,j,k,1)=max(pVisc(i,j,k,1),blend*mu_spg)
+   !                      pDiffL(i,j,k,1)=max(pDiffL(i,j,k,1),Cdiff*blend*mu_spg)
+   !                      pDiffG(i,j,k,1)=max(pDiffG(i,j,k,1),Cdiff*blend*mu_spg)
+   !                   end if
+   !                   ! Apply VF sponge
+   !                   if (pVF(i,j,k,1).lt.VFcutoff.and.xpos.gt.sponge_x) then
+   !                      ! Clip VF to zero
+   !                      pVF(i,j,k,1)=0.0_WP; pQ(i,j,k,1)=0.0_WP; pQ(i,j,k,3)=0.0_WP
+   !                      ! Clean up plane and barycenter data
+   !                      pCL(i,j,k,1:3)=[amr%xlo+(real(i,WP)+0.5_WP)*dx,amr%ylo+(real(j,WP)+0.5_WP)*dy,amr%zlo+(real(k,WP)+0.5_WP)*dz]
+   !                      pCG(i,j,k,1:3)=[amr%xlo+(real(i,WP)+0.5_WP)*dx,amr%ylo+(real(j,WP)+0.5_WP)*dy,amr%zlo+(real(k,WP)+0.5_WP)*dz]
+   !                      ! Rescale to keep primitives the same
+   !                      pQ(i,j,k,2)=pRHOG(i,j,k,1)
+   !                      pQ(i,j,k,4)=pRHOG(i,j,k,1)*pIG(i,j,k,1)
+   !                      pQ(i,j,k,5)=pRHOG(i,j,k,1)*pUVW(i,j,k,1)
+   !                      pQ(i,j,k,6)=pRHOG(i,j,k,1)*pUVW(i,j,k,2)
+   !                      pQ(i,j,k,7)=pRHOG(i,j,k,1)*pUVW(i,j,k,3)
+   !                   end if
+   !                end do; end do; end do
+   !       end do
+   !       call amr%mfiter_destroy(mfi)
+   !    end do
+   !    call fs%build_plic(time%t)
+   ! end subroutine apply_vf_sponge
+
+   !> User init callback - set Q and VF/barycenters for a drop moving into a static shock
    subroutine shockdrop_init(solver,lvl,time,ba,dm)
       use amrex_amr_module, only: amrex_boxarray,amrex_distromap,amrex_mfiter,amrex_box
       use amrex_amr_module, only: amrex_mfiter_build,amrex_mfiter_destroy
@@ -258,7 +329,7 @@ contains
       call amrex_mfiter_destroy(mfi)
    end subroutine shockdrop_init
 
-   !> Apply inflow BC at low-x (face=1)
+   !> BC routine: x-HIGH is an inflow with pre-shock state in the wall frame
    subroutine shock_dirichlet(solver,lvl,time,face,bx,comp,p)
       use amrex_amr_module, only: amrex_box
       class(amrmpcomp), intent(inout) :: solver
@@ -270,23 +341,23 @@ contains
       real(WP), dimension(:,:,:,:), contiguous, pointer :: p
       integer :: i,j,k
       select case (face)
-       case (1)  ! X-LOW: Dirichlet inflow with post-shock (gas only, no liquid)
+       case (2)  ! X-HIGH: Dirichlet inflow with pre-shock state (gas only, no liquid)
          select case (comp)
-          case ('U')  ! Staggered U=u2
+          case ('U')  ! Staggered U=u1 (pre-shock, shifted to wall frame)
             do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-                     p(i,j,k,1)=u2
+                     p(i,j,k,1)=u1
                   end do; end do; end do
           case ('V','W')  ! Staggered V,W=0
             do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
                      p(i,j,k,1)=0.0_WP
                   end do; end do; end do
-          case ('Q')  ! Cell-centered Q=(rho2,rho2*u2,0,0,rho2*I2)
+          case ('Q')  ! Cell-centered Q in pre-shock gas
             do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
                      p(i,j,k,1)=0.0_WP                  ! No liquid
-                     p(i,j,k,2)=rhoG2                   ! Gas density
+                     p(i,j,k,2)=rhoG1                   ! Gas density
                      p(i,j,k,3)=0.0_WP                  ! No liquid energy
-                     p(i,j,k,4)=rhoG2*gas%get_e_from_p_rho(p=pG2,rho=rhoG2,y=[1.0_WP]) ! Gas internal energy
-                     p(i,j,k,5)=rhoG2*u2                ! X-momentum
+                     p(i,j,k,4)=rhoG1*gas%get_e_from_p_rho(p=pG1,rho=rhoG1,y=[1.0_WP]) ! Gas internal energy
+                     p(i,j,k,5)=rhoG1*u1                ! X-momentum
                      p(i,j,k,6)=0.0_WP
                      p(i,j,k,7)=0.0_WP
                   end do; end do; end do
@@ -294,40 +365,7 @@ contains
       end select
    end subroutine shock_dirichlet
 
-   !> Set wall IB
-   subroutine set_IBw(data,lvl,time,ba,dm)
-      use amrex_amr_module, only: amrex_boxarray,amrex_distromap,amrex_mfiter,amrex_box,amrex_mfiter_build,amrex_mfiter_destroy
-      class(amrdata), intent(inout) :: data
-      integer, intent(in) :: lvl
-      real(WP), intent(in) :: time
-      type(amrex_boxarray), intent(in) :: ba
-      type(amrex_distromap), intent(in) :: dm
-      type(amrex_mfiter) :: mfi
-      type(amrex_box) :: bx
-      real(WP), dimension(:,:,:,:), contiguous, pointer :: pVF
-      real(WP) :: dx,dy,dz,xlo,xhi,xwall
-      integer :: i,j,k
-      xwall=Xw+Uw*time
-      dx=data%amr%dx(lvl); dy=data%amr%dy(lvl); dz=data%amr%dz(lvl)
-      call amrex_mfiter_build(mfi,ba,dm,tiling=.false.)
-      do while (mfi%next())
-         bx=mfi%growntilebox(data%ng)
-         pVF=>data%mf(lvl)%dataptr(mfi)
-         do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-                  xlo=data%amr%xlo+real(i  ,WP)*dx
-                  xhi=data%amr%xlo+real(i+1,WP)*dx
-                  if (xlo.ge.xwall) then
-                     pVF(i,j,k,1)=1.0_WP
-                  else if (xhi.le.xwall) then
-                     pVF(i,j,k,1)=0.0_WP
-                  else
-                     pVF(i,j,k,1)=(xhi-xwall)/dx
-                  end if
-               end do; end do; end do
-      end do
-      call amrex_mfiter_destroy(mfi)
-   end subroutine set_IBw
-
+   !> Tagger based on SGS Reynolds number, density/pressure errors, Ducros sensor
    subroutine my_tagger(solver,lvl,time,tags_ptr)
       use iso_c_binding,    only: c_ptr,c_char
       use amrex_amr_module, only: amrex_mfiter,amrex_box,amrex_tagboxarray
@@ -418,13 +456,13 @@ contains
       ! Initialize AMR grid
       create_amrgrid: block
          ! Set name
-         amr%name='amrcomp_drop'
+         amr%name='impact'
          ! Read in base grid size
          call param_read('Base nx',amr%nx)
          call param_read('Base ny',amr%ny)
          call param_read('Base nz',amr%nz)
          ! Set domain
-         amr%xlo=-05.0_WP; amr%xhi=+15.0_WP
+         amr%xlo=  0.0_WP; call param_read('Domain length',amr%xhi)
          amr%ylo=-10.0_WP; amr%yhi=+10.0_WP
          amr%zlo=-10.0_WP; amr%zhi=+10.0_WP
          ! Set periodicity
@@ -447,7 +485,6 @@ contains
          character(len=str_long) :: message
          real(WP) :: A,B,C
          real(WP) :: GammaL,PinfL,bL,CvL,qpL
-         real(WP) :: GammaV,cvV,qV,qpV
          real(WP) :: GammaG,CvG
          real(WP) :: T_G
          ! Gas EoS parameters (ideal gas)
@@ -475,9 +512,15 @@ contains
          ! Shift to lab frame: pre-shock stationary
          u2=1.0_WP
          u1=0.0_WP
+         ! Galilean shift to wall frame (wall fixed): subtract 1 from both velocities
+         ! After shift: post-shock fluid at u2=0 (matches wall), pre-shock fluid at u1=-1 (toward wall)
+         u2=u2-1.0_WP
+         u1=u1-1.0_WP
+         ! Drop initial location
+         call param_read('Drop location',x_drop)
          ! CvG from T2=1
          CvG=pG2/(rhoG2*(GammaG-1.0_WP))
-         ! Surface tension (set to 0 for this case)
+         ! Surface tension
          call param_read('Weber number',Weber)
          ! Liquid state from density ratio and liquid Mach number
          call param_read('Density ratio',density_ratio)
@@ -490,8 +533,8 @@ contains
          ! Pre-shock gas temperature (ideal gas, T = p/((gamma-1)*Cv*rho))
          T_G=pG1/(rhoG1*(GammaG-1.0_WP)*CvG)
          CvL=(pL1+PinfL)/(rhoL1*(GammaL-1.0_WP)*T_G) ! Force thermal equilibrium
-         ! Build materials
-         call gas%initialize  (gamma=GammaG,cv=CvG,q=0.0_WP,qp=0.0_WP,name='gas')
+         ! Build materials: gas = ideal-gas air; liquid = NASG water
+         call gas%initialize(gamma=GammaG,cv=CvG,q=0.0_WP,qp=0.0_WP,name='gas')
          call water%initialize(gamma=GammaL,pinf=PinfL,cv=CvL,q=0.0_WP,qp=0.0_WP,name='water')
          ! Viscous parameters
          call param_read('Reynolds number',Reynolds)
@@ -594,11 +637,12 @@ contains
 
       ! Initialize compressible multiphase solver
       create_solver: block
-         use amrex_amr_module, only: amrex_bc_ext_dir,amrex_bc_foextrap
-         use amrmpcomp_class,  only: BC_GAS
+         use amrex_amr_module, only: amrex_bc_ext_dir,amrex_bc_foextrap,amrex_bc_reflect_odd
+         use amrmpcomp_class,  only: BC_GAS,BC_REFLECT
          use amrdata_class,    only: interp_face_lin
+         use messager,         only: die
          ! Assign materials and create flow solver
-         fs%liq=>water; fs%gas=>gas; call fs%initialize(amr=amr,name='drop')
+         fs%liq=>water; fs%gas=>gas; call fs%initialize(amr=amr,name='impact')
          ! Set surface tension coefficient
          fs%sigma=1.0_WP/Weber; fs%sigma=0.0_WP
          ! Use face-linear interp if 2D (divfree requires ratio=2 in all dirs)
@@ -618,25 +662,43 @@ contains
          relax_model%Pmin_gas=fs%Pmin_gas; relax_model%Tmin_gas=fs%Tmin_gas
          ! Set initial conditions
          fs%user_init=>shockdrop_init
-         ! Set BCs
-         if (.not.amr%xper) then
-            fs%lo_bc(1)=BC_GAS
-            fs%Q%lo_bc(1,:)=amrex_bc_ext_dir; fs%Q%hi_bc(1,:)=amrex_bc_foextrap
-            fs%U%lo_bc(1,:)=amrex_bc_ext_dir; fs%U%hi_bc(1,:)=amrex_bc_foextrap
-            fs%V%lo_bc(1,:)=amrex_bc_ext_dir; fs%V%hi_bc(1,:)=amrex_bc_foextrap
-            fs%W%lo_bc(1,:)=amrex_bc_ext_dir; fs%W%hi_bc(1,:)=amrex_bc_foextrap
-            fs%user_bc=>shock_dirichlet
-         end if
-      end block create_solver
 
-      ! Create IB data
-      create_IB: block
-         use amrdata_class, only: interp_reinit
-         call param_read('Wall location',Xw,default=-10.0_WP)
-         call param_read('Wall velocity',Uw,default=0.0_WP)
-         call IBw%initialize(amr,name='IBw',ncomp=1,ng=fs%nover,interp=interp_reinit); call IBw%register()
-         IBw%user_init=>set_IBw
-      end block create_IB
+         ! Gas inflow from x+
+         !fs%hi_bc(1)=BC_GAS
+         !fs%Q%hi_bc(1,:)=amrex_bc_ext_dir
+         !fs%U%hi_bc(1,:)=amrex_bc_ext_dir
+         !fs%V%hi_bc(1,:)=amrex_bc_ext_dir
+         !fs%W%hi_bc(1,:)=amrex_bc_ext_dir
+         !fs%user_bc=>shock_dirichlet
+
+         ! Neumann at x+
+         fs%hi_bc(1)=BC_REFLECT
+         fs%Q%hi_bc(1,:)=amrex_bc_foextrap
+         fs%U%hi_bc(1,:)=amrex_bc_foextrap
+         fs%V%hi_bc(1,:)=amrex_bc_foextrap
+         fs%W%hi_bc(1,:)=amrex_bc_foextrap
+
+         ! Wall BC at x- (90 degree contact)
+         fs%lo_bc(1)=BC_REFLECT
+         fs%Q%lo_bc(1,:)=amrex_bc_foextrap ! Extrapolate everything then correct
+         fs%Q%lo_bc(1,5)=amrex_bc_reflect_odd
+         fs%U%lo_bc(1,:)=amrex_bc_reflect_odd
+         ! Tangential momenta Q(6:7) and face velocities V, W at wall: slip vs no-slip
+         call param_read('Wall BC',wall_bc_type,default='noslip')
+         select case (trim(wall_bc_type))
+          case ('noslip')
+            fs%Q%lo_bc(1,6:7)=amrex_bc_reflect_odd
+            fs%V%lo_bc(1,:)  =amrex_bc_reflect_odd
+            fs%W%lo_bc(1,:)  =amrex_bc_reflect_odd
+          case ('slip')
+            fs%Q%lo_bc(1,6:7)=amrex_bc_foextrap
+            fs%V%lo_bc(1,:)  =amrex_bc_foextrap
+            fs%W%lo_bc(1,:)  =amrex_bc_foextrap
+          case default
+            call die('[simulation_init] Unknown Wall BC type: must be slip or noslip')
+         end select
+
+      end block create_solver
 
       ! Initialize workspaces
       create_workspace: block
@@ -701,7 +763,7 @@ contains
       ! Initialize visualization
       create_viz: block
          ! Create visualization object
-         call viz%initialize(amr,'drop',use_hdf5=.false.)
+         call viz%initialize(amr,'impact',use_hdf5=.false.)
          call viz%add_scalar(fs%VF,1,'VF')
          call viz%add_scalar(fs%RHOL,1,'RHOL')
          call viz%add_scalar(fs%RHOG,1,'RHOG')
@@ -902,14 +964,6 @@ contains
          call time%adjust_dt()
          call time%increment()
 
-         ! Update wall IB
-         update_wall: block
-            integer :: lvl
-            do lvl=0,amr%clvl()
-               call IBw%user_init(lvl,time%t,amr%ba(lvl),amr%dm(lvl))
-            end do
-         end block update_wall
-
          ! Remember old state
          call fs%store_old()
 
@@ -928,11 +982,9 @@ contains
          ! Compute face velocities and ensure C/F consistency
          call fs%get_face_velocity(); call fs%average_down_velocity()
          ! Add pressure term
-         call fs%add_phasic_pressure(scale=0.5_WP*time%dt,mask=IBw)
+         call fs%add_phasic_pressure(scale=0.5_WP*time%dt)
          ! Add surface tension term
          call fs%add_surface_tension(scale=0.5_WP*time%dt)
-         ! Apply IB forcing
-         call apply_ib_forcing()
          ! Average down and fill ghosts
          call fs%Q%average_down(); call fs%Q%fill(time=time%tmid)
          call fs%average_down_velocity(); call fs%fill_velocity(time=time%tmid)
@@ -953,11 +1005,9 @@ contains
          ! Compute face velocities and ensure C/F consistency
          call fs%get_face_velocity(); call fs%average_down_velocity()
          ! Add pressure term
-         call fs%add_phasic_pressure(scale=time%dt,mask=IBw)
+         call fs%add_phasic_pressure(scale=time%dt)
          ! Add surface tension term
          call fs%add_surface_tension(scale=time%dt)
-         ! Apply IB forcing
-         call apply_ib_forcing()
          ! Average down and fill ghosts
          call fs%Q%average_down(); call fs%Q%fill(time=time%t)
          call fs%average_down_velocity(); call fs%fill_velocity(time=time%t)
@@ -973,6 +1023,9 @@ contains
 
          ! Compute viscosities
          call get_viscosities()
+
+         ! Apply sponge layer
+         ! call apply_vf_sponge()
 
          ! Add SGS models
          call fs%add_viscartif(dt=time%dt,Cvisc=1.0e-2_WP)
@@ -991,7 +1044,7 @@ contains
          if (save_evt%occurs()) then
             save_checkpoint: block
                use string, only: rtoa
-               call io%write(dirname='restart/drop_'//trim(adjustl(rtoa(time%t))),time=time%t,step=time%n)
+               call io%write(dirname='restart/impact_'//trim(adjustl(rtoa(time%t))),time=time%t,step=time%n)
             end block save_checkpoint
          end if
 
@@ -1022,75 +1075,10 @@ contains
       ! Force a final checkpoint on exit
       final_checkpoint: block
          use string, only: rtoa
-         call io%write(dirname='restart/drop_'//trim(adjustl(rtoa(time%t))),time=time%t,step=time%n)
+         call io%write(dirname='restart/impact_'//trim(adjustl(rtoa(time%t))),time=time%t,step=time%n)
       end block final_checkpoint
 
    contains
-
-      !> Apply IB forcing - zero Q inside solid and apply quasi-Neumann
-      subroutine apply_ib_forcing()
-         use amrex_amr_module, only: amrex_mfiter,amrex_box
-         type(amrex_mfiter) :: mfi
-         type(amrex_box) :: bx
-         real(WP), dimension(:,:,:,:), contiguous, pointer :: pQ,pU,pV,pW,pVF
-         real(WP), dimension(:,:,:,:), allocatable :: pQold
-         real(WP) :: sum_VF,sum_VFQ(4)
-         integer :: i,j,k,lvl,ii,jj,kk
-         ! Compressible IB scheme requires updated ghosts for Q
-         call fs%Q%average_down(); call fs%Q%fill(time=time%t)
-         ! Apply IB scheme in solid region
-         do lvl=0,amr%clvl()
-            call amr%mfiter_build(lvl,mfi)
-            do while (mfi%next())
-               ! Get pointers to data
-               pQ=>fs%Q%mf(lvl)%dataptr(mfi)
-               pU=>fs%U%mf(lvl)%dataptr(mfi)
-               pV=>fs%V%mf(lvl)%dataptr(mfi)
-               pW=>fs%W%mf(lvl)%dataptr(mfi)
-               pVF=>IBw%mf(lvl)%dataptr(mfi)
-               ! Get interior tilebox
-               bx=mfi%tilebox()
-               ! Create backup of Q
-               allocate(pQold,source=pQ)
-               ! Loop over tile interior
-               do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-                        ! Skip pure fluid cells
-                        if (pVF(i,j,k,1).eq.1.0_WP) cycle
-                        ! Scale Q(5-7) by VF and drive towards wall velocity
-                        pQ(i,j,k,5)=pVF(i,j,k,1)*pQ(i,j,k,5)+(1.0_WP-pVF(i,j,k,1))*sum(pQ(i,j,k,1:2))*Uw
-                        pQ(i,j,k,6)=pVF(i,j,k,1)*pQ(i,j,k,6)
-                        pQ(i,j,k,7)=pVF(i,j,k,1)*pQ(i,j,k,7)
-                        ! VF-weighted neighbor average for Q(1:4)
-                        sum_VF=0.0_WP; sum_VFQ=0.0_WP
-                        do kk=-1,1; do jj=-1,1; do ii=-1,1
-                                 if (ii.eq.0.and.jj.eq.0.and.kk.eq.0) cycle
-                                 sum_VF      =sum_VF      +pVF(i+ii,j+jj,k+kk,1)
-                                 sum_VFQ(1:4)=sum_VFQ(1:4)+pVF(i+ii,j+jj,k+kk,1)*pQold(i+ii,j+jj,k+kk,1:4)
-                              end do; end do; end do
-                        if (sum_VF.gt.0.0_WP) then
-                           pQ(i,j,k,1:4)=pVF(i,j,k,1)*pQold(i,j,k,1:4)+(1.0_WP-pVF(i,j,k,1))*sum_VFQ(1:4)/sum_VF
-                        end if
-                     end do; end do; end do
-               ! Deallocate pQold
-               deallocate(pQold)
-               ! Force face velocities
-               bx=mfi%nodaltilebox(1)
-               do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-                        pU(i,j,k,1)=0.5_WP*sum(pVF(i-1:i,j,k,1))*pU(i,j,k,1)+(1.0_WP-0.5_WP*sum(pVF(i-1:i,j,k,1)))*Uw
-                     end do; end do; end do
-               bx=mfi%nodaltilebox(2)
-               do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-                        pV(i,j,k,1)=0.5_WP*sum(pVF(i,j-1:j,k,1))*pV(i,j,k,1)
-                     end do; end do; end do
-               bx=mfi%nodaltilebox(3)
-               do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-                        pW(i,j,k,1)=0.5_WP*sum(pVF(i,j,k-1:k,1))*pW(i,j,k,1)
-                     end do; end do; end do
-            end do
-            call amr%mfiter_destroy(mfi)
-         end do
-      end subroutine apply_ib_forcing
-
       !> Compute droplet quantities of interest (MLE, mass, MOI)
       !> All operations are performed directly on fs%VF.
       subroutine compute_drop_metrics()
@@ -1150,9 +1138,9 @@ contains
                         z_cc=amr%zlo+(real(k,WP)+0.5_WP)*dz
 
                         ! MLE: track windward leading edge at VF thresholds
-                        if (vf_local.ge.0.01_WP) MLE_VF001=min(MLE_VF001,x_cc-0.5_WP*dx)
-                        if (vf_local.ge.0.1_WP)  MLE_VF01 =min(MLE_VF01, x_cc-0.5_WP*dx)
-                        if (vf_local.ge.0.5_WP)  MLE_VF05 =min(MLE_VF05, x_cc-0.5_WP*dx)
+                        if (vf_local.ge.0.01_WP) MLE_VF001=min(MLE_VF001,x_cc-0.5_WP*dx+time%t+0.5_WP)
+                        if (vf_local.ge.0.1_WP)  MLE_VF01 =min(MLE_VF01, x_cc-0.5_WP*dx+time%t+0.5_WP)
+                        if (vf_local.ge.0.5_WP)  MLE_VF05 =min(MLE_VF05, x_cc-0.5_WP*dx+time%t+0.5_WP)
 
                         ! Accumulate mass and moments
                         if (vf_local.ge.0.01_WP) then
@@ -1257,7 +1245,6 @@ contains
       call dQdt%finalize()
       call Umag%finalize()
       call Mach%finalize()
-      call IBw%finalize()
       ! Finalize materials
       call water%finalize()
       call gas%finalize()

@@ -6,8 +6,6 @@ Max level: 6
 
 # Regridding parameters
 Regrid nsteps: 10
-Tagging Re:    100
-Tagging Rho:   0.1
 Tag Reynolds value: 100
 Tag density error:  0.6
 Tag pressure error: 0.3

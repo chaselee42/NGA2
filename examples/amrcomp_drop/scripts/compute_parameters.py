@@ -52,21 +52,21 @@ def main():
     GammaG_input = input("  GammaG (default=1.3): ").strip()
     GammaG = float(GammaG_input) if GammaG_input else 1.3
     GammaL_input = input("  GammaL (default=6.12): ").strip()
-    GammaL = float(GammaL_input) if GammaL_input else 6.12
+    GammaL = float(GammaL_input) if GammaL_input else 2.805
 
     print("\n  Please provide the shock Mach number:")
     Ms_input = input("  Shock Mach number Ms (default=5.12): ").strip()
-    Ms = float(Ms_input) if Ms_input else 5.12
+    Ms = float(Ms_input) if Ms_input else 5.3
 
     print("\n  Please provide the following ambient ratios (no input corresponds to default ambient ratios for water/air):")
     density_input = input("  rhoL1/rhoG1 (Ambient density ratio, default=816.0): ").strip()
-    rhoL1_over_rhoG1 = float(density_input) if density_input else 816.0
+    rhoL1_over_rhoG1 = float(density_input) if density_input else 854.7
 
     sound_speed_input = input("  cL1/cG1 (Ambient sound speed ratio, default=4.3): ").strip()
-    sound_speed_ratio = float(sound_speed_input) if sound_speed_input else 4.3
+    sound_speed_ratio = float(sound_speed_input) if sound_speed_input else 4.42
 
     visc_input = input("  muL1/muG1 (Ambient viscosity ratio, default=58.3): ").strip()
-    muL1_over_muG1 = float(visc_input) if visc_input else 58.3
+    muL1_over_muG1 = float(visc_input) if visc_input else 49.8
 
     cond_input = input("  kL1/kG1  (Ambient thermal conductivity ratio, default=23.1): ").strip()
     kL1_over_kG1 = float(cond_input) if cond_input else 23.1

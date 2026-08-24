@@ -106,26 +106,26 @@ contains
          ! Loop over grown tilebox
          bx=mfi%growntilebox(solver%nover)
          do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-            ! Compute VF from planar levelset
-            call initialize_volume_moments(lo=[solver%amr%xlo+real(i  ,WP)*dx,solver%amr%ylo+real(j  ,WP)*dy,solver%amr%zlo+real(k  ,WP)*dz], &
-            &                              hi=[solver%amr%xlo+real(i+1,WP)*dx,solver%amr%ylo+real(j+1,WP)*dy,solver%amr%zlo+real(k+1,WP)*dz], &
-            &                              levelset=planar_levelset,time=time,level=nref,VFlo=VFlo,VF=myVF,BL=BL,BG=BG)
-            ! Store volume fraction
-            pVF(i,j,k,1)=myVF
-            ! Store barycenters
-            if (lvl.eq.solver%amr%maxlvl) then
-               pCL(i,j,k,:)=BL
-               pCG(i,j,k,:)=BG
-            end if
-            ! Set conserved variables: Q=(VF*rhoL,(1-VF)*rhoG,VF*rhoL*IL,(1-VF)*rhoG*IG,0,0,0)
-            pQ(i,j,k,1)=(       myVF)*rhoL
-            pQ(i,j,k,2)=(1.0_WP-myVF)*rhoG
-            pQ(i,j,k,3)=pQ(i,j,k,1)*IEL
-            pQ(i,j,k,4)=pQ(i,j,k,2)*IEG
-            pQ(i,j,k,5)=0.0_WP
-            pQ(i,j,k,6)=0.0_WP
-            pQ(i,j,k,7)=0.0_WP
-         end do; end do; end do
+                  ! Compute VF from planar levelset
+                  call initialize_volume_moments(lo=[solver%amr%xlo+real(i  ,WP)*dx,solver%amr%ylo+real(j  ,WP)*dy,solver%amr%zlo+real(k  ,WP)*dz], &
+                  &                              hi=[solver%amr%xlo+real(i+1,WP)*dx,solver%amr%ylo+real(j+1,WP)*dy,solver%amr%zlo+real(k+1,WP)*dz], &
+                  &                              levelset=planar_levelset,time=time,level=nref,VFlo=VFlo,VF=myVF,BL=BL,BG=BG)
+                  ! Store volume fraction
+                  pVF(i,j,k,1)=myVF
+                  ! Store barycenters
+                  if (lvl.eq.solver%amr%maxlvl) then
+                     pCL(i,j,k,:)=BL
+                     pCG(i,j,k,:)=BG
+                  end if
+                  ! Set conserved variables: Q=(VF*rhoL,(1-VF)*rhoG,VF*rhoL*IL,(1-VF)*rhoG*IG,0,0,0)
+                  pQ(i,j,k,1)=(       myVF)*rhoL
+                  pQ(i,j,k,2)=(1.0_WP-myVF)*rhoG
+                  pQ(i,j,k,3)=pQ(i,j,k,1)*IEL
+                  pQ(i,j,k,4)=pQ(i,j,k,2)*IEG
+                  pQ(i,j,k,5)=0.0_WP
+                  pQ(i,j,k,6)=0.0_WP
+                  pQ(i,j,k,7)=0.0_WP
+               end do; end do; end do
       end do
       call amrex_mfiter_destroy(mfi)
    end subroutine shocktube_init
@@ -244,7 +244,7 @@ contains
          ! Initialize primitive variables
          call fs%get_primitive(Q=fs%Q)
          ! Initialize face velocities
-         call fs%get_face_velocity()
+         call fs%get_face_velocity(dt=time%dt)
          call fs%average_down_velocity(); call fs%fill_velocity(time=time%t)
          ! Set viscosities to zero
          call get_viscosities()
@@ -392,20 +392,10 @@ contains
          call fs%Q%average_down(); call fs%Q%fill(time=time%tmid)
          ! Rebuild PLIC
          call fs%build_plic(time=time%t)
+         ! Add surface tension term
+         ! call fs%add_surface_tension(scale=0.5_WP*time%dt)
          ! Get most up-to-date pressure
          if (time%t.ge.5.0e-6_WP) call fs%apply_relax(dt=0.5_WP*time%dt,time=time%tmid)
-         call fs%get_primitive(Q=fs%Q)
-         ! Rebuild sub-cell VF
-         call fs%build_subVF()
-         ! Compute face velocities and ensure C/F consistency
-         call fs%get_face_velocity(); call fs%average_down_velocity()
-         ! Add pressure term
-         call fs%add_phasic_pressure(scale=0.5_WP*time%dt)
-         ! Add surface tension term
-         call fs%add_surface_tension(scale=0.5_WP*time%dt)
-         ! Average down and fill ghosts
-         call fs%Q%average_down(); call fs%Q%fill(time=time%tmid)
-         call fs%average_down_velocity(); call fs%fill_velocity(time=time%tmid)
          ! Get primitive variables
          call fs%get_primitive(Q=fs%Q)
          ! ======================= RK2 Stage 2: Q[n+1]=Q[n]+dt*dQdt(t,Q*) =======================
@@ -415,20 +405,10 @@ contains
          call fs%Q%average_down(); call fs%Q%fill(time=time%t)
          ! Rebuild PLIC
          call fs%build_plic(time=time%t)
+         ! Add surface tension term
+         ! call fs%add_surface_tension(scale=time%dt)
          ! Get most up-to-date pressure
          if (time%t.ge.5.0e-6_WP) call fs%apply_relax(dt=time%dt,time=time%t)
-         call fs%get_primitive(Q=fs%Q)
-         ! Rebuild sub-cell VF
-         call fs%build_subVF()
-         ! Compute face velocities and ensure C/F consistency
-         call fs%get_face_velocity(); call fs%average_down_velocity()
-         ! Add pressure term
-         call fs%add_phasic_pressure(scale=time%dt)
-         ! Add surface tension term
-         call fs%add_surface_tension(scale=time%dt)
-         ! Average down and fill ghosts
-         call fs%Q%average_down(); call fs%Q%fill(time=time%t)
-         call fs%average_down_velocity(); call fs%fill_velocity(time=time%t)
          ! Get primitive variables
          call fs%get_primitive(Q=fs%Q)
          ! ======================================================================================

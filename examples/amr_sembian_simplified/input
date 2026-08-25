@@ -1,0 +1,74 @@
+# =====================================================================
+#  Simplified Sembian shock-drop case (Ms=2.4 planar shock, water cylinder)
+#  All quantities are DIMENSIONAL (SI): m, s, kg, Pa
+#  Static uniform grid - no AMR
+# =====================================================================
+
+# Mesh definition (x in [0,Lx], y in [-Ly/2,+Ly/2])
+Lx : 0.111
+Ly : 0.074
+
+# ---------------------------------------------------------------------
+# Grid resolution: pick ONE of the three blocks below.
+# The mesh is uniform and isotropic (dx=dy=dz), Lx/Ly=1.5 so nx=1.5*ny.
+# CPD = cells across the initial drop diameter d0=0.022 m
+# ---------------------------------------------------------------------
+# ~305 CPD  (dx = 7.2266e-5 m)   [1536 x 1024 =  1.57 M cells]
+Base nx:   1536
+Base ny:   1024
+Base nz:   1
+# ~610 CPD  (dx = 3.6133e-5 m)   [3072 x 2048 =  6.29 M cells]
+!Base nx:   3072
+!Base ny:   2048
+!Base nz:   1
+# ~1220 CPD (dx = 1.8066e-5 m)   [6144 x 4096 = 25.17 M cells]
+!Base nx:   6144
+!Base ny:   4096
+!Base nz:   1
+# ---------------------------------------------------------------------
+
+# Drop geometry
+Drop diameter : 0.022
+Drop location : 0.04
+
+# Shock: cylinder leading edge is at x=0.029, so this sits 8.35e-4 m upstream of it
+Shock location : 0.0275
+
+# Pre-shock (ambient, stationary) air
+Pre-shock density  : 1.17
+Pre-shock pressure : 1.01e5
+
+# Post-shock air (Ms=2.4 Rankine-Hugoniot state, lab frame)
+Post-shock density  : 3.7579
+Post-shock pressure : 6.6189e5
+Post-shock velocity : 574.57
+
+# Stiffened-gas EOS: p = (gamma-1)*rho*e - gamma*Pinf
+# Gas (Pinf=0 -> ideal gas), Cv = R/(gamma-1) = 287.058/0.4
+Gas gamma : 1.4
+Gas Cv    : 718
+# Liquid water
+Liquid gamma : 6.12
+Liquid Pinf  : 3.43e8
+Liquid Cv    : 4184
+# Liquid initial state (at rest, in pressure/thermal equilibrium with the ambient gas)
+Liquid density : 1000
+
+# Constant dynamic viscosities [Pa.s]
+Liquid viscosity : 9e-4
+Gas viscosity    : 1.81e-5
+
+# Surface tension (0 = off; 0.0728 N/m for the air/water interface)
+Surface tension coefficient : 0
+!Surface tension coefficient : 0.0728
+
+# Time integration
+Max dt:   2.5e-8
+Max CFL:  0.5
+Max time: 2.0e-4
+Max wall time:     !14400    ! IN SECONDS
+
+# Output
+Output period:      1.0e-6   ! 100 frames over Max time
+Checkpoint period:  2.0e-5
+Restart from:      !restart/drop_1.00000E-04

@@ -1823,7 +1823,7 @@ contains
          real(WP), dimension(:,:,:,:), contiguous, pointer :: pVx,pVy,pVz
          real(WP), dimension(:,:,:,:), contiguous, pointer :: pCL,pCG,pCLold,pCGold
          real(WP), dimension(1:3,1:3) :: dUdx
-         real(WP) :: div,vol
+         real(WP) :: div,vol,divf
          real(WP) :: Lvol_old,Lvol_new,Lvol_flux
          real(WP) :: Gvol_old,Gvol_new,Gvol_flux
          real(WP), dimension(3) :: Lbar_old,Lbar_new,Lbar_flux
@@ -1913,9 +1913,10 @@ contains
                         dUdx(2,3)=0.5_WP*dyi*(pUVW(i,j+1,k,3)-pUVW(i,j-1,k,3))
                         dUdx(3,3)=0.5_WP*dzi*(pUVW(i,j,k+1,3)-pUVW(i,j,k-1,3))
                         div=dUdx(1,1)+dUdx(2,2)+dUdx(3,3)
+                        divf=dxi*(pU(i+1,j,k,1)-pU(i,j,k,1))+dyi*(pV(i,j+1,k,1)-pV(i,j,k,1))+dzi*(pW(i,j,k+1,1)-pW(i,j,k,1))
                         ! Pressure dilatation: split by VF between phasic energies - discontinuous
-                        rhs(i,j,k,3)=rhs(i,j,k,3)-(       pVF(i,j,k,1))*pPL(i,j,k,1)*div
-                        rhs(i,j,k,4)=rhs(i,j,k,4)-(1.0_WP-pVF(i,j,k,1))*pPG(i,j,k,1)*div
+                        rhs(i,j,k,3)=rhs(i,j,k,3)-(       pVF(i,j,k,1))*pPL(i,j,k,1)*divf
+                        rhs(i,j,k,4)=rhs(i,j,k,4)-(1.0_WP-pVF(i,j,k,1))*pPG(i,j,k,1)*divf
                         ! Viscous heating: τ:∇U, split by VF between phasic energies
                         rhs(i,j,k,3)=rhs(i,j,k,3)+(       pVF(i,j,k,1))*( &
                         & (2.0_WP*pVisc(i,j,k,1)*dUdx(1,1)+(pBeta(i,j,k,1)-2.0_WP/3.0_WP*pVisc(i,j,k,1))*div)*dUdx(1,1) &
@@ -2191,8 +2192,8 @@ contains
             myQflux(4)=myVflux(2)*pQold(i0,j0,k0,4)/(1.0_WP-VF0)
             if (this%gas%ns.gt.1) myQflux(this%Yg_lo:this%Yg_hi)=myVflux(2)*pQold(i0,j0,k0,this%Yg_lo:this%Yg_hi)/(1.0_WP-VF0)
          end if
-         !myQflux(5:7)=sum(myQflux(1:2))*pQold(i0,j0,k0,5:7)/max(sum(pQold(i0,j0,k0,1:2)),this%rho_floor)
-         call reconstruct_momentum(i0,j0,k0,myVflux,myQflux)
+         myQflux(5:7)=sum(myQflux(1:2))*pQold(i0,j0,k0,5:7)/max(sum(pQold(i0,j0,k0,1:2)),this%rho_floor)
+         ! call reconstruct_momentum(i0,j0,k0,myVflux,myQflux)
 
       end subroutine tet2flux_plic
 

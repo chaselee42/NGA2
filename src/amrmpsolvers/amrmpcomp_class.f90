@@ -2192,8 +2192,8 @@ contains
             myQflux(4)=myVflux(2)*pQold(i0,j0,k0,4)/(1.0_WP-VF0)
             if (this%gas%ns.gt.1) myQflux(this%Yg_lo:this%Yg_hi)=myVflux(2)*pQold(i0,j0,k0,this%Yg_lo:this%Yg_hi)/(1.0_WP-VF0)
          end if
-         myQflux(5:7)=sum(myQflux(1:2))*pQold(i0,j0,k0,5:7)/max(sum(pQold(i0,j0,k0,1:2)),this%rho_floor)
-         ! call reconstruct_momentum(i0,j0,k0,myVflux,myQflux)
+         ! myQflux(5:7)=sum(myQflux(1:2))*pQold(i0,j0,k0,5:7)/max(sum(pQold(i0,j0,k0,1:2)),this%rho_floor)
+         call reconstruct_momentum(i0,j0,k0,myVflux,myQflux)
 
       end subroutine tet2flux_plic
 

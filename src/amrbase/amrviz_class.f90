@@ -333,7 +333,7 @@ contains
       else
          n=1
          rewind: do i=this%ntime,1,-1
-            if (this%time(i).lt.time-1.0e-6_WP) then
+            if (this%time(i).lt.time-1.0e-12_WP) then
                n=i+1; exit rewind
             end if
          end do rewind
